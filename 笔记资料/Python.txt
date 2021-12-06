@@ -1,0 +1,74 @@
+Python -->官网：python.org
+1.安装Python3和pycharm，并配置基础环境
+2.常用命令
+  1.input  输出
+  2.type   输出变量类型
+3.算数运算
+  / // * ** round(5/3,2) a,b=divmod(5/3) 
+4.比较运算
+  ==  !=  < <= > >= 
+5.逻辑运算
+  and or not 
+6.数据类型：整数，浮点数，布尔数(Ture,Flase)
+7.整数在不同进制数的表示
+  8进制以0o或0O开头
+  16进制以0x或0X开头
+  2进制以0b或0B开头
+8.字符串操作
+  1.'' "" """(输入一列值) -->例：a="""name   a="python"
+  2.字符截取：
+    取长度len(a),任意位置a[4:5]或a[-1]
+	判断是否在改字符串中：p in a 或 p not in a
+  3.字符串拼接
+    a+'123'-->python123  '*'*3-->***  a*3-->pythonpythonpython
+  4.列表：a=[10,23,33,41]
+    a[1]=22 -->把第二项改为22  a.append(50)-->向列表最后添加50
+  5.元组：t=(1,2,3,4,5) -->元组值不可变  
+  6.字典：d1 = {"name": "tom", "age": 20}
+    len(d1)  -->2
+    'tom' in d1   # tom是字典的key吗   -->False
+    'name' in d1  # name是字典的key吗  -->True
+    d1['name']    # 通过key取value     -->'tom'      
+9.判断语句
+  if
+    elif
+	else
+10.模块：randow
+   imput   randow 
+   randow.randint(1,100)    #1-100中随机选取,包括1和100
+   random.choice('abcd')    # 在字符串中随机取出一项
+   random.choice(['aaa', 'bbb', 'ccc'])  # 在列表中随机取出一项
+11.range(0, 10)
+   list(range(10))  # 将range转成列表
+   for i in range(10):  # 实际使用时，不需要转列表
+   list(range(10))  # 10是结束数字，起始值默认为0。结束数字不包含
+     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+   list(range(6, 11))  # 6是起始数字，包含
+     [6, 7, 8, 9, 10]
+   list(range(1, 11, 2))  # 步长为2
+     [1, 3, 5, 7, 9]
+   list(range(10, 0, -1))  # 步长为-1
+     [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+12.快速生成列表
+   [10 + 1 for i in range(1, 11)]  # 通过循环控制表达式计算的次数
+	 [11, 11, 11, 11, 11, 11, 11, 11, 11, 11]
+   [10 + i for i in range(1, 11)]  # 表达式可以用循环的变量
+     [11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+   [10 + i for i in range(1, 11) if i % 2 == 1]  #if作为过滤条件，满足条件的放到列表
+     [11, 13, 15, 17, 19]
+   ['192.168.1.' + str(i) for i in range(1, 255)]
+   ['192.168.1.%s' % i for i in range(1, 255)]
+   '%s+%s' % (a,b)-->表示把值a和b分别赋给前面的%s 可以是多个
+13.循环while，for
+   break:终止循环，执行循环之后的命令
+   continue：终止本次循环，继续下一次循环
+14.文件的打开、读取、关闭
+   f=open(/root/a.txt) -->打开文件a.txt
+   date=f.read()  -->把a.txt的内容赋给date
+   f.close()    -->关闭文件a.txt
+   print(date)  -->输出d内容
+   
+   
+  
+  
+  

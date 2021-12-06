@@ -1,0 +1,83 @@
+# bind + dnsmasq 实现域名转发（部分主机）
+
+ 原创
+
+[wushank](https://blog.51cto.com/wushank)2014-02-20 20:30:02©著作权
+
+*文章标签*[bind dnsmasq](https://blog.51cto.com/search/result?q=bind+dnsmasq)*文章分类*[rhel](https://blog.51cto.com/wushank/category1)*阅读数*10082
+
+## 1、bind配置：
+
+------
+
+```shell
+/var/named/chroot/etc/named.conf
+
+listen-on port 53 { 192.168.1.254; };
+
+forwarders { 202.101.172.35; };
+forward  only;
+
+zone "test.com" IN {
+    type forward;
+    forwarders { 127.0.0.1; };
+};
+```
+
+## 2、dnsmasq配置：
+
+------
+
+```shell
+resolv-file=/etc/resolv.dnsmasq.conf #使用自定义的nameserver文件
+listen-address=127.0.0.1          	 #监听IP，和bind监控的ip区分开   
+bind-interfaces                 	 #绑定开关
+no-hosts                       		 #不使用默认的/etc/hosts
+addn-hosts=/etc/dnsmasq_hosts    	 #使用其他的自定义文件
+
+mx-host=sky-mobi.com,pop.sky-mobi.com,50   #指定域sky-mobi.com的mx记录及优先级
+localmx                       #返还mx记录
+conf-dir=/etc/dnsmasq.d
+----#例：
+server=/www.nm-201-sg016-w.com/10.5.129.92
+server=/www.nm-201-sg016-r.com/10.5.129.92
+address=/agent.proxy.com/10.5.141.104
+address=/cmdb-api.bingheyc.com/47.108.69.243
+
+```
+
+dnsmasq参数说明：
+
+------
+| 具体参数       | 参数说明                                                     |
+| -------------- | ------------------------------------------------------------ |
+| resolv-file    | 定义dnsmasq从哪里获取上游DNS服务器的地址，默认从/etc/resolv.conf获取。 |
+| strict-order   | 表示严格按照resolv-file文件中的顺序从上到下进行DNS解析，直到第一个解析成功为止。 |
+| listen-address | 定义dnsmasq监听的地址，默认是监控本机的所有网卡上。          |
+| address        | 启用泛域名解析，即自定义解析a记录，                          |
+|                | 例如:address=/long.com/192.168.115.10访间long.com时的所有域名都会被解析成192.168.115.10 |
+| bogus-nxdomain | 对于任何被解析到此IP的域名，将响应NXDOMAIN使其解析失效，可以多次指定 |
+|                | 通常用于对于访问不存在的域名，禁止其跳转到运营商的广告站点   |
+|                | 指定使用哪个DNS服务器进行解析，对于不同的网站可以使用不同的域名 |
+| server         | 对应解析。                                                   |
+|                | 例如: server=/google.com/8.8.8.8 #表示对于google的服务，使用谷歌的DNS解析。 |
+
+## 3、创建/etc/resolv.dnsmasq.conf
+
+------
+
+```shell
+nameserver 8.8.8.8
+```
+
+------
+
+## 4、创建/etc/dnsmasq_hosts
+
+------
+
+```shell
+192.168.1.250  pop.test.com
+192.168.1.250  test.com
+```
+

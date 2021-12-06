@@ -1,0 +1,81 @@
+## 一、修改ssh端口<2022>及修改fil用户密码
+
+```shell
+echo fil:9ecd96abc1|sudo chpasswd
+sudo sed -i '$a port 2022' /etc/ssh/sshd_config  && sudo systemctl restart sshd
+```
+
+## 二、命令设置Ubuntu防火墙规则
+
+```shell
+sudo ufw enable        #开启ufw防火墙
+sudo ufw default deny  #默认拒绝所有
+sudo ufw allow proto tcp from any to any port 30303,8545,20001:20100,20201:20300,20401:20500,20601:20602    #开启所需端口服务
+sudo ufw allow proto tcp from 47.100.232.96 to any port 2022     #允许47.100.232.96<jumpserver> 机器登录我的2022端口
+sudo ufw allow proto tcp from 211.93.21.169 to any port 2022     #允许211.93.21.169<ansible>机器登录我的2022端口
+```
+
+## 三、配置文件方式导入<ipv4,ipv6就把所有的ufw改为ufw6>
+
+```shell
+cat /etc/ufw/user.rules
+cat /etc/ufw/user6.rules
+*filter
+:ufw-user-input - [0:0]
+:ufw-user-output - [0:0]
+:ufw-user-forward - [0:0]
+:ufw-before-logging-input - [0:0]
+:ufw-before-logging-output - [0:0]
+:ufw-before-logging-forward - [0:0]
+:ufw-user-logging-input - [0:0]
+:ufw-user-logging-output - [0:0]
+:ufw-user-logging-forward - [0:0]
+:ufw-after-logging-input - [0:0]
+:ufw-after-logging-output - [0:0]
+:ufw-after-logging-forward - [0:0]
+:ufw-logging-deny - [0:0]
+:ufw-logging-allow - [0:0]
+:ufw-user-limit - [0:0]
+:ufw-user-limit-accept - [0:0]
+
+### RULES ###
+
+### tuple ### allow tcp 8545,20001:20100,20201:20300,20401:20500,20601:20602,30303 0.0.0.0/0 any 0.0.0.0/0 in
+
+-A ufw-user-input -p tcp -m multiport --dports 8545,20001:20100,20201:20300,20401:20500,20601:20602,30303 -j ACCEPT
+
+### tuple ### allow tcp 2022 0.0.0.0/0 any 47.100.232.96 in
+
+-A ufw-user-input -p tcp --dport 2022 -s 47.100.232.96 -j ACCEPT
+
+### tuple ### allow tcp 2022 0.0.0.0/0 any 211.93.21.169 in
+
+-A ufw-user-input -p tcp --dport 2022 -s 211.93.21.169 -j ACCEPT
+
+### tuple ### allow tcp 80 0.0.0.0/0 any 0.0.0.0/0 in
+
+-A ufw-user-input -p tcp --dport 80 -j ACCEPT
+
+### END RULES ###
+
+### LOGGING ###
+
+-A ufw-after-logging-input -j LOG --log-prefix "[UFW BLOCK] " -m limit --limit 3/min --limit-burst 10
+-A ufw-after-logging-forward -j LOG --log-prefix "[UFW BLOCK] " -m limit --limit 3/min --limit-burst 10
+-I ufw-logging-deny -m conntrack --ctstate INVALID -j RETURN -m limit --limit 3/min --limit-burst 10
+-A ufw-logging-deny -j LOG --log-prefix "[UFW BLOCK] " -m limit --limit 3/min --limit-burst 10
+-A ufw-logging-allow -j LOG --log-prefix "[UFW ALLOW] " -m limit --limit 3/min --limit-burst 10
+
+### END LOGGING ###
+
+### RATE LIMITING ###
+
+-A ufw-user-limit -m limit --limit 3/minute -j LOG --log-prefix "[UFW LIMIT BLOCK] "
+-A ufw-user-limit -j REJECT
+-A ufw-user-limit-accept -j ACCEPT
+
+### END RATE LIMITING ###
+
+COMMIT
+```
+
