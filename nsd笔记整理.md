@@ -3187,6 +3187,7 @@ cd  /root/ceph-cluster
 ceph-deploy new node1 node2 node3 #创建ceph-mon集群并生成配置文件
 ceph-deploy mon create-initial  #拷贝配置文件到mon主机并启动服务
 ceph -s  #查看ceph-mon集群配置情况
+ceph-deploy admin control #没有map时使用
 systemctl status ceph-mon@node1  #可查看此主机mon服务情况
 ```
 
