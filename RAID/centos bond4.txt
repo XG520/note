@@ -1,0 +1,32 @@
+cat /etc/sysconfig/network-scripts/ifcfg-bond4 
+DEVICE=bond4
+TYPE=Bond
+IPADDR=10.1.30.3
+NETMASK=255.255.255.0
+GATEWAY=10.1.30.254
+DNS1=192.168.10.202
+DNS2=192.168.10.186
+USERCTL=no
+BOOTPROTO=none
+ONBOOT=yes
+BONDING_MASTER=yes
+BONDING_OPTS="mode=4 miimon=100"
+
+
+
+cat /etc/sysconfig/network-scripts/ifcfg-ens2f0
+DEVICE=ens2f0
+USERCTL=no
+ONBOOT=yes
+MASTER=bond4
+SLAVE=yes
+BOOTPROTO=none
+
+
+cat /etc/sysconfig/network-scripts/ifcfg-ens9f0
+DEVICE=ens9f0
+ONBOOT=yes
+MASTER=bond4
+SLAVE=yes
+USERCTL=no
+BOOTPROTO=none

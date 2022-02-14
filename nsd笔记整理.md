@@ -3992,8 +3992,20 @@ delete from  mytable；            #删除表记录
 
 ### 4、数值类型
 
-​	1）整数型
-​    	 ![image-20210628113630897](C:\Users\king\AppData\Roaming\Typora\typora-user-images\image-20210628113630897.png)
+​	1）整数型：
+
+​        tinyint：微小整数   -128~127  0~255
+
+​		smallint：小整数   -32768~32767   0~65535
+
+​		mediumint：中整数   -2^23~2^23-1    0~2^24-1
+
+​		int：大整数    -2^31~2^31-1       0~2^32-1\
+
+​		bigint：极大整数   -2^63~2^63-1   0~2^64-1
+
+​		unsigned：使用无符号范围
+
 ​	2）浮点型：
 ​	  float：单精度
 ​	  double：双精度
