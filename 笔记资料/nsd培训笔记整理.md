@@ -872,12 +872,13 @@ www      A  192.168.4.11   #web服务地址
 
 （由上而下解析，匹配及停止）
 
-​	1)格式：view  "haha" { #分类的名称
+​	1)格式：
 
 ```shell
-match-clients { 192.168.4.100; }; #匹配客户端来源地址
-zone  "12306.cn"  IN {
-file “地址库1”;
+view  "haha" { #分类的名称
+	match-clients { 192.168.4.100; }; #匹配客户端来源地址
+		zone  "12306.cn"  IN {
+		file “地址库1”;
  };   
 }; 
 ```
@@ -1623,19 +1624,22 @@ echo -e "\033[44;37;5m ME\033[0m COOL"
 
 ### 16、正则表达式
 
-| 基本正则列表 |                                      |
-| ------------ | ------------------------------------ |
-| 正则符号     | 插述                                 |
-| ^            | 匹配行首                             |
-| $            | 匹配行尾                             |
-| []           | 匹配集合中的任意个字符               |
-| [^]          | 对集合取反                           |
-| .            | 匹配任意单个字符                     |
-| *            | 匹配前一个字符任意次数不允许单独使用 |
-| {n,m}        | 匹配前一个字符n到m次                 |
-| {n}          | 匹配前一个字符n次                    |
-| {n,}         | 匹配前一个字符n次及以上              |
-| ()           | 保留                                 |
+| 基本正则列表 |                                               |
+| ------------ | --------------------------------------------- |
+| 正则符号     | 插述                                          |
+| ^            | 匹配行首                                      |
+| $            | 匹配行尾                                      |
+| []           | 匹配集合中的任意个字符                        |
+| [^]          | 对集合取反                                    |
+| .            | 匹配任意单个字符                              |
+| *            | 匹配前一个字符任意次数不允许单独使用          |
+| {n,m}        | 匹配前一个字符n到m次                          |
+| {n}          | 匹配前一个字符n次                             |
+| {n,}         | 匹配前一个字符n次及以上                       |
+| ()           | 保留                                          |
+| \d           | 匹配任意数字，与[0-9]同义       -->大写则取反 |
+| \w           | 匹配任意数字字母字符，与[0-9a-zA-Z]同义       |
+| \s           | 匹配空白字符，与[\r\v\f\t\n]同义              |
 
 | 扩展正则列表 |                  |
 | ------------ | ---------------- |
@@ -2148,86 +2152,97 @@ ulimit -Sn 100000 设置软限制数值
 
 ​	1）部署git服务
 
-```
-		mkdir /var/git 创建目录
-		git init /var/git/project --bare 创建git仓库
+```shell
+mkdir /var/git 创建目录
+git init /var/git/project --bare 创建git仓库
+
+#vim .gitignore 创建.gitignore来阻止某些文件加入到跟踪
 ```
 
 ​	2）git常用命令
 
 ```shell
-		git clone root@192.168.2.100：/var/git/project   克隆到本地
-		git add .    添加到缓存
-		git rm  删除数据
-		git commit -m “修改日志记录”  提交到本地仓库
-		git push 提交到服务器  
-		git pull 从服务器同步数据
-		git status 查看当前状态
-		git reflog  查看本地日志
-		git log oneline  查看服务器日志
-		git reset --hard e0878  恢复到日志记录的状态（e0878代表HEAD指针节点）
-		git branch hotfix  创建hotfix分支
-		git checkout hotfix 切换到hotfix分支
-		git merge hotfix  合并hotfix到当前分支
-		注意：所有命令需要在仓库目录（/project：即工作区）下操作
+git clone root@192.168.2.100：/var/git/project   克隆到本地
+git add .    添加到缓存
+git rm  删除数据
+git commit -m “修改日志记录”  提交到本地仓库
+git push 提交到服务器  
+git pull 从服务器同步数据
+git status 查看当前状态
+git reflog  查看本地日志
+git log oneline  查看服务器日志
+git reset --hard e0878  恢复到日志记录的状态（e0878代表HEAD指针节点）
+git branch #查看有哪些分支及当前在那个分支
+git branch hotfix  创建hotfix分支
+git checkout hotfix 切换到hotfix分支
+git merge hotfix  合并hotfix到当前分支
+git merge b1 -m 'merge b1 to master'  #合并b1分支到master
+git tag #可以将某一次提交打标记，以示本提交重要。通常用于将某次提交标记为一个版本 
+git remote add origin http://172.16.8.80:8080/devops/myweb.git 
+git remote add orign http://172.16.8.80:8080/devops/myweb.git
+git push -u origin --all
+git push -u origin --tag
+git config --list
+注意：所有命令需要在仓库目录（/project：即工作区）下操作
 ```
 
 ​	3）特殊情况处理
 ​		a）初次提交到本地仓库报错时	
 
-```
-		git config --global user.email ["you@example.com"](http://mailto:\)  确定邮箱
-		git config --global user.name "Your Name"      确定有户名
+```shell
+git config --lsit  #查看配置信息
+git config --global user.email ["you@example.com"](http://mailto:\)  #确定邮箱
+git config --global user.name "Your Name"      #确定有户名
 ```
 
 ​		b）初次提交数据到服务器报错时			
 
 ```
-		git config --global push.default simple 复制提示信息，修改为新的使用习惯
+git config --global push.default simple 复制提示信息，修改为新的使用习惯
 ```
 
 ​		c）提交到服务器，发现客服端不是最新版本报错时		
 
-```
-		git push提交服务器时报错，再使用git pull 命令
-		#git要求添加新的事件日志记录（添加日志时自动进入vim编辑状态，保存退出即可），然后再次提交git push即可
+```shell
+git push提交服务器时报错，再使用git pull 命令
+#git要求添加新的事件日志记录（添加日志时自动进入vim编辑状态，保存退出即可），然后再次提交git push即可
 ```
 
 ​		d）如果多个客户端同事在修改同一个文件时
 
-```
-			git push 报错，提示要git pull，输入git pull之后 结果还是失败
-			vim 修改的文件 发现文件被系统修改（可以看到所有的修改情况），确定最终商量结果，然后保存退出
-			git add .
-			git commit -m "ok"
-			git push 推送了最新商量结果给服务器 
+```shell
+git push 报错，提示要git pull，输入git pull之后 结果还是失败
+vim 修改的文件 发现文件被系统修改（可以看到所有的修改情况），确定最终商量结果，然后保存退出
+git add .
+git commit -m "ok"
+git push 推送了最新商量结果给服务器 
 ```
 
 ​	4）使用git方式
 ​		a）ssh方式		
 
 ```
-		ssh-keygen 制作秘钥
-		ssh-copy-id root@192.168.2.100 传递公钥，之后连接就无需密码验证
+ssh-keygen 制作秘钥
+ssh-copy-id root@192.168.2.100 传递公钥，之后连接就无需密码验证
 ```
 
 ​		b）git协议方式（只读，软件包：git-daemon）
 
-```
-		git  init  --bare  /var/git/project 制作仓库，如果已有仓库，可以不制作
-		修改配置文件（/usr/lib/systemd/system/git@.service）
-		ExecStart=-/usr/libexec/git-core/git-daemon --base-path=/var/git --export .... ----------->修改git路径
-		systemctl  start  git.socket开启服务
+```shell
+git  init  --bare  /var/git/project 制作仓库，如果已有仓库，可以不制作
+修改配置文件（/usr/lib/systemd/system/git@.service）
+ExecStart=-/usr/libexec/git-core/git-daemon --base-path=/var/git --export .... ----------->修改git路径
+systemctl  start  git.socket开启服务
 ```
 
 ​		c）http协议方式（只读，软件包httpd gitweb）
 
-```
-	修改配置文件：/etc/gitweb.conf ---->11行
-		our $projectroot = "/var/git";  删除#号，并修改路径
-		ss -ntulp | grep :80 检查80端口是否被占用，有则关闭相关服务
-		git init --bare /var/git/base_http
-		systemctl  start  httpd 开启httpd服务
+```shell
+#修改配置文件：/etc/gitweb.conf ---->11行
+our $projectroot = "/var/git";  删除#号，并修改路径
+ss -ntulp | grep :80 检查80端口是否被占用，有则关闭相关服务
+git init --bare /var/git/base_http
+systemctl  start  httpd 开启httpd服务
 ```
 
 ### 17、制作RPM包（以Nginx为例）
@@ -2235,46 +2250,46 @@ ulimit -Sn 100000 设置软限制数值
 ​	a）软件包（gcc pcre-devel openssl-devel rpm-build） 
 
 ```
-		rpmbuild -ba nginx.spec 输入命令，会报错，但必须输入
-		cp lnmp_soft/nginx-1.12.2.tar.gz rpmbuild/SOURCES/ 将nginx的源码包放入sources目录
+rpmbuild -ba nginx.spec 输入命令，会报错，但必须输入
+cp lnmp_soft/nginx-1.12.2.tar.gz rpmbuild/SOURCES/ 将nginx的源码包放入sources目录
 ```
 
 ​	b）编辑配置文件（vim rpmbuild/SPECS/nginx.spec ）		
 
-```
-		Name:nginx   名称，不能随意写
-		Version:1.12.2  版本，不能随意写
-		Release:1   自定义版本号
-		Summary:test test test 简单描述
-		#Group: 
-		License:GPL 授权协议
-		URL:www.a.com  网址
-		Source0:nginx-1.12.2.tar.gz  源码包名，不能随意写
-		#BuildRequires: 
-		#Requires: 
-		%description   详细描述
-		test test test test   随意写的描述
-		%post
-		useradd nginx -s /sbin/nologin      #非必需操作：安装后脚本(创建账户)
-		%prep
-		%setup -q
-		%build
-		./configure --with-http_ssl_module  稍作修改
-		make %{?_smp_mflags}
-		%install
-		make install DESTDIR=%{buildroot}
-		%files
-		%doc
-		/usr/local/nginx/* 安装好之后的文件路径
-		%changelog
+```shell
+Name:nginx   名称，不能随意写
+Version:1.12.2  版本，不能随意写
+Release:1   自定义版本号
+Summary:test test test 简单描述
+#Group: 
+License:GPL 授权协议
+URL:www.a.com  网址
+Source0:nginx-1.12.2.tar.gz  源码包名，不能随意写
+#BuildRequires: 
+#Requires: 
+%description   详细描述
+test test test test   随意写的描述
+%post
+useradd nginx -s /sbin/nologin      #非必需操作：安装后脚本(创建账户)
+%prep
+%setup -q
+%build
+./configure --with-http_ssl_module  稍作修改
+make %{?_smp_mflags}
+%install
+make install DESTDIR=%{buildroot}
+%files
+%doc
+/usr/local/nginx/* 安装好之后的文件路径
+%changelog
 ```
 
 ​	c）生成RPM包
 
-```
-		rpmbuild -ba /root/rpmbuild/SPECS/nginx.spec 
-		ls rpmbuild/RPMS/x86_64/ 检查目录，可以看到nginx的rpm包
-		yum -y install nginx-1.12.2-1.x86_64.rpm 用yum安装测试
+```shell
+rpmbuild -ba /root/rpmbuild/SPECS/nginx.spec 
+ls rpmbuild/RPMS/x86_64/ 检查目录，可以看到nginx的rpm包
+yum -y install nginx-1.12.2-1.x86_64.rpm 用yum安装测试
 ```
 
 ### 18、VPN搭建
@@ -3236,13 +3251,14 @@ ceph-deploy new node1 node2 node3 #创建ceph-mon集群并生成配置文件
 ceph-deploy mon create-initial  #拷贝配置文件到mon主机并启动服务
 ceph -s  #查看ceph-mon集群配置情况
 systemctl status ceph-mon@node1  #可查看此主机mon服务情况
+ceph-deploy admin ceph-node1 #推送/etc/ceph/ceph.client.admin.keyring文件到node1上
 ```
 
 ​		e）配置ceph-osd服务			
 
 ```shell
 初始化磁盘
-	ceph-deploy dis zap node1:sdb node1:sdc ......  #格式化为gpt格式
+	ceph-deploy disk zap node1:sdb node1:sdc ......  #格式化为gpt格式
 共享磁盘
 	ceph-deploy osd create node1:sdb1 node1:sdc ...#共享磁盘出去
  #共享出去的每一块磁盘都自动分出一个5G的缓存盘和剩余的数据盘
@@ -3462,9 +3478,15 @@ UnsafeUserParameters=1                   //是否允许自定义key
 yum -y install php-gd php-xml php-bcmath php-mbstring
 ```
 
-​		b）修改php配置文件： vim /etc/php.ini	
+​		b）安装PHP版本
 
 ```php
+//zabbix5.0以上需要php72以上
+yum install http://rpms.remirepo.net/enterprise/remi-release-7.rpm
+yum install yum-utils
+yum-config-manager --enable remi-php72
+
+//修改php配置文件： vim /etc/php.ini	
 date.timezone = Asia/Shanghai        //设置时区
 max_execution_time = 300          //最大执行时间，秒
 post_max_size = 32M            //POST数据最大容量
@@ -3902,8 +3924,8 @@ patch -RE < test.patch       #还原旧版本，反向修复
 3、Iptables防火墙规则的条件	
 
 ```shell
-例1：iptables -I INPUT -p tcp --dport 80 -j REJECT
-例2：iptables  -A  INPUT  -s 192.168.4.100  -j  DROP
+例1：iptables  -I INPUT -p tcp --dport 80 -j REJECT
+例2：iptables  -A INPUT  -s 192.168.4.100  -j  DROP
 例3：iptables  -A INPUT -p icmp --icmp-type echo-request  -j  DROP        	#仅禁止入站的ping请求，不拒绝入站的ping回应包
 ```
 
@@ -3937,6 +3959,31 @@ sudo iptables -t nat -A POSTROUTING  -s 192.168.4.0/24 -p tcp --dport 80 -j SNAT
 #访问本机的222端口的都转到192.168.2.20的22号端口
 sudo iptables -t nat -A PREROUTING -p tcp --dport 222 -j DNAT --to-destination 192.168.2.20:22
 sudo iptables -t nat -A POSTROUTING -p tcp -d 192.168.2.20 --dport 22 -j SNAT --to-source 172.16.8.8
+###iptables典型NAT上网
+一般做为NAT的计算机同时也是局域网的网关，假定该机有两块网卡eth0、eth1，eth0连接外网，IP为202.96.134.134；eth1连接局域网，IP为192.168.62.10
+1. 先在内核里打开ip转发功能
+#sudo sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
+#sudo sh -c "echo net.ipv4.ip_forward = 1 > /ect/sysctl.conf" && sudo sysctl -p
+
+2.使局域网用户能访问internet所要做的nat
+#iptables -t nat -A POSTROUTING -p tcp -o eth0 -j SNAT --to-source 202.96.134.134
+
+如果上网的IP是动态IP，则使用以下规则：
+#iptables -t nat -A POSTROUTING -o eth0 -s 192.168.62.0/24 -j MASQUERADE
+
+如果是通过ADSL上网，且公网IP是动态IP，则使用以下规则：
+#iptables -t nat -A POSTROUTING -o ppp0 -s 192.168.62.0/24 -j MASQUERADE
+
+3. 使internet用户可以访问局域网内web主机所要做的nat
+#iptables -t nat -A PREROUTING -p tcp -d 202.96.134.134 --dport 80 -j DNAT --to-destination 192.168.62.10
+###
+与snat不同的是，masquerade可以自动读取外网卡获得动态ip地址，然后进行地址转换。
+POSTROUTING：在通过Linux路由器之后做的策略，也就是路由器的外网接口。
+-s 192.168.62.0/24：源数据所来自这个网段，也可以是单个ip，不写表示所有内网ip。
+-o eth0 -j MASQUERADE：表示在eth0这个外网接口上使用IP伪装。
+内往的网关用通外网的内网地址一致
+内网dns一般和通外网的主机的外网网关一致
+通外网的主机内往地址不设网关
 ```
 
 ​		c）登陆web主机查看日志			
@@ -5824,16 +5871,17 @@ kibana：可视化平台工具
 		 curl http://192.168.1.41:9200/  #查看节点配置
 		 curl http://192.168.1.41:9200/_cluster/health?pretty #查看集群配置
 	4）安装插件（集群中的任意一台主机）--->
+
 			- head    常用
 			- bigdesk   图形解控页面
 			- kopf    API接口工具（开发用）
-				  ./plugin install|remove|list   #安装|删除|查看
+					  ./plugin install|remove|list   #安装|删除|查看
 				  cd /usr/share/elasticsearch/bin/
 				  ./plugin install [ftp://192.168.1.252/elk/bigdesk-master.zip](http://ftp://192.168.1.252/elk/bigdesk-master.zip)  通过发ftp安装插件
 			http://192.168.1.45:9200/_plugin/kopf  #访问插件页面
-	5）Elasticserach操作方法--->用http协议
-		 操作方法：增PUT|删DELETE|改POST|GET查
-		 关键字：
+			5）Elasticserach操作方法--->用http协议
+			 操作方法：增PUT|删DELETE|改POST|GET查
+			 关键字：
 				_cat 查询信息--->?v|?help--->详细信息|帮助信息
 				curl -XGET [http://es-0001:9200/_cat](http://es-0001:9200/_cat?v|help)/master?v  #查询集群中的master是谁
 			a）新建index索引
@@ -5877,6 +5925,7 @@ kibana：可视化平台工具
 		 23  kibana.index: ".kibana"
 		 26  kibana.defaultAppId: "discover"
 	 
+
 	3）配置/etc/hosts启动服务并访问验证
 		  systemctl restart kibana.service 
 		  systemctl enable --now  kibana.service 

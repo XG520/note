@@ -84,7 +84,7 @@ SNMPTrapperFile=/data/zabbix/snmptrap.log
 HousekeepingFrequency=12
 MaxHousekeeperDelete=500000
 Timeout=30
-AlertScriptsPath=/data/zabbix/alertscripts
+AlertScriptsPath=/data/zabbix/alertscripts    
 ExternalScripts=/data/zabbix/externalscripts
 LogSlowQueries=5000
 StartProxyPollers=250
@@ -161,3 +161,42 @@ DenyKey=system.run[*]
 Timeout=30
 ```
 
+## 4.钉钉报警
+
+```python
+个人-->动作
+服务器:{HOST.NAME}发生: {TRIGGER.NAME}故障!
+告警主机:{HOST.NAME}
+告警地址:{HOST.IP}
+监控项目:{ITEM.NAME}
+监控取值:{ITEM.LASTVALUE}
+告警等级:{TRIGGER.SEVERITY}
+当前状态:{TRIGGER.STATUS}
+告警信息:{TRIGGER.NAME}
+告警时间:{EVENT.DATE} {EVENT.TIME}
+事件ID:{EVENT.ID}
+
+管理--->报警媒介类型
+cat /data/zabbix/alertscripts/dingding.py 
+#!/usr/bin/env python
+# -*- coding: utf-8 -*
+import requests
+import json
+import sys
+import os
+headers = {'Content-Type': 'application/json;charset=utf-8'}
+api_url = "https://oapi.dingtalk.com/robot/send?access_token=3a77f9e3c9a349b900cd2f94f935d4cecacc9bf5a7b124c65b94668f4d26dab9"
+def msg(text):
+    json_text= {
+     "msgtype": "text",
+        "text": {
+         "content": "业务告警:"+text
+         }
+    }
+    print requests.post(api_url,json.dumps(json_text),headers=headers).content
+if __name__ == '__main__':
+    text = sys.argv[1]
+    msg(text)
+```
+
+![](C:\Users\king\AppData\Roaming\Typora\typora-user-images\image-20211227110240138.png)

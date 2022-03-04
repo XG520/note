@@ -8,6 +8,7 @@ create user wangxl@'localhost';
 alter user wang identified by "mima123.";   #赋予密码
 alter user wang@'localhost' identified by "mima123.";
 drop user wangxl;
+flush privileges; #专用于刷新user表记录
 ```
 
 ## 2、权限管理
