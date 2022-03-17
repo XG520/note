@@ -1,0 +1,23 @@
+jenkins国内镜像地址配置
+修改/var/lib/jenkins/updates/default.json
+sed -i 's/https:\/\/updates.jenkins.io\/download/https:\/\/mirrors.tuna.tsinghua.edu.cn\/jenkins/g'  /var/lib/jenkins/updates/default.json 
+sed -i 's/www.google.com/cn.bing.com/g' /var/lib/jenkins/updates/default.json
+如果/var/lib/jenkins/updates/default.json不存在，可以
+ Manage Jenkins -> Manage Plugins -> Advanced选项卡 -> 
+ Update site : https://mirrors.tuna.tsinghua.edu.cn/jenkins/updates/update-center.json -> 点击submit提交。
+ 
+ jenkins容器化运行需要修改本地挂载目录用户与用户组 chown -R 1000:1000 /localdir
+ 
+ ansible 安装
+ yum -y insatll python3
+ pip3 install  ansible
+ 报错：Command "python setup.py egg_info" failed with error code 1 in /tmp/pip-build-unufsag3/cryptography/
+安装  yum -y install python3*
+
+
+docker国内镜像加速
+vim /etc/docker/daemon.json
+加入：{"registry-mirrors": ["加速地址"]}
+
+
+ssh远程去除yes/no：加上“-o StrictHostKeyChecking=no”的选项
