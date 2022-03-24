@@ -9,6 +9,8 @@ sed -i 's/www.google.com/cn.bing.com/g' /var/lib/jenkins/updates/default.json
  jenkins容器化运行需要修改本地挂载目录用户与用户组 chown -R 1000:1000 /localdir
  jenkins报错：the input device is not a TTY  原因是docker的-t参数会为输出添加一个伪终端Allocate a pseudo-TTY，
  所以jenkins无法捕捉到输出，解决办法：去掉-t选项
+ jenkins项目名称保存在变量JOB_NAME里
+ jenkins参数化构建，在脚本中使用$()调用参数
  
 ansible 安装
  yum -y insatll python3

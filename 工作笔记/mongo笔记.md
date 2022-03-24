@@ -1,5 +1,9 @@
 # mongodb
 
+### 创建或切换数据库
+
+use <database>
+
 ## insert
 
 db. <集合>.insertOne(<json对象>)
