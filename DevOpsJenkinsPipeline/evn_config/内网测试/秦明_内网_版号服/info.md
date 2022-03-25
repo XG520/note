@@ -1,0 +1,13 @@
+端口:22
+用户名:root
+秘钥:hz_intranet_rsa
+时区:Asia/Shanghai
+tag:qm_bh
+branch:trunk
+后台地址:192.168.1.241
+server_path：http://192.168.0.69:8080/svn/HGame/server/trunk/Mingyue
+client_path：http://192.168.0.69:8080/svn/QGame/client/20210419/Config
+ESIP：127.0.0.1
+渠道差异表:input
+地区差异表:
+提审差异表:

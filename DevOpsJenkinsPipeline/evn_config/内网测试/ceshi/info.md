@@ -1,0 +1,12 @@
+端口:22
+用户名:root
+秘钥:hz_intranet_rsa
+时区:Asia/Shanghai
+tag:ceshi
+branch:20211020
+后台地址:172.16.80.137
+server_path:http://192.168.0.69:8080/svn/HGame/server/20211020
+client_path:http://192.168.0.69:8080/svn/HGame/client/20211020
+渠道差异表:
+地区差异表:
+提审差异表:

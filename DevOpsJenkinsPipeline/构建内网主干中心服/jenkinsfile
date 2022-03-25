@@ -1,0 +1,241 @@
+pipeline{
+    agent any
+    parameters {
+        booleanParam description: '上传镜像', name: 'uploadImages' 
+        text(name: 'svn_code_version', defaultValue: 'HEAD', description: '代码的SVN路径及版本号')
+        text(name: 'svn_config_version', defaultValue: 'HEAD', description: '表与导表工具的SVN路径及版本号') 
+        
+    }
+    environment{ 
+        config_path="http://192.168.0.69:8080/svn/common/Config/DevOpsJenkinsPipeline/evn_config"
+        username="wangsiwei"
+        password="wangsiwei123" 
+        harbor_url="192.168.8.2"
+    }
+    stages{ 
+        stage("拉取配置文件")
+        {
+            environment{
+                config_full_path="$config_path/${evn}@HEAD"
+            }
+            steps{
+                sh '''
+                # choice(name: 'evn', choices: ['魔术_内网_主干','秦明_内网_验收1服'], description: '') 
+#!/bin/bash
+rm -fr *
+# 拉取对应配置文件
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q  $config_full_path evnconfig
+cat ./evnconfig/info.md
+
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+cat > hosts << EOF
+[install]
+$ip
+EOF
+                '''
+            }
+        } 
+        stage("拉取源码"){
+            
+            steps{
+               sh '''
+#!/bin/bash
+
+server_path=$(cat evnconfig/info.md | grep "server_path" | grep -Po '(?<=server_path:).*' | sed 's/\r//g')
+client_path=$(cat evnconfig/info.md | grep "client_path" | grep -Po '(?<=client_path:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+server_full_path="$server_path@$svn_code_version"
+client_full_path="$client_path/Config@$svn_code_version"
+
+# 创建编译输出目录
+rm -rf publish
+mkdir -p code publish config activity
+# 获取代码版本信息并保存
+svn info --username $username --password $password --no-auth-cache $server_full_path > publish/version_code.md
+cat publish/version_code.md
+
+# 拉取代码
+SVN_Revision=$(cat publish/version_code.md | grep Revision | grep -Po '(?<=Revision: ).*')
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q -r $SVN_Revision $server_full_path code
+
+# 获取配置版本信息并保存
+svn info --username $username --password $password --no-auth-cache $client_full_path > publish/version_config.md
+cat publish/version_config.md
+
+# 拉取配置
+SVN_Revision=$(cat publish/version_config.md | grep Revision | grep -Po '(?<=Revision: ).*')
+echo "【消息】拉取 $SVN_Revision 版本 Config"
+svn co --username $username --password $password --no-auth-cache -q -r $SVN_Revision $client_full_path config
+
+cp evnconfig/openServerActivity.json activity
+# 创建 Dockerfile
+time_zone1="ln -sf /usr/share/zoneinfo/$(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') /etc/localtime"
+time_zone2="echo $(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') >/etc/timezone" 
+
+cat > dockerfile_game_center << EOF
+FROM mcr.microsoft.com/dotnet/core/runtime:3.1
+WORKDIR /app
+
+RUN $time_zone1
+RUN $time_zone2
+COPY publish .
+ENTRYPOINT ["dotnet","Server.Center.dll"]
+EOF
+
+cat > dockerfile_game_server << EOF
+FROM mcr.microsoft.com/dotnet/core/runtime:3.1
+WORKDIR /app
+
+RUN $time_zone1
+RUN $time_zone2
+COPY publish .
+ENTRYPOINT ["dotnet","Server.Logic.dll"]
+EOF
+
+
+               '''  
+                
+            }
+             
+        }
+        stage("转换Excel")
+        {
+            
+            steps{
+sh ''' 
+server_path=$(cat evnconfig/info.md | grep "server_path" | grep -Po '(?<=server_path:).*' | sed 's/\r//g')
+client_path=$(cat evnconfig/info.md | grep "client_path" | grep -Po '(?<=client_path:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+server_full_path="$server_path@$svn_code_version"
+client_full_path="$client_path/Config@$svn_code_version"
+
+export DOTNET_ROOT=/usr/local/dotnet
+export PATH=$DOTNET_ROOT:$PATH
+# 导表
+table1=$(cat evnconfig/info.md | grep "渠道差异表" | grep -Po '(?<=渠道差异表:).*' | sed 's/\r//g')
+if [ -n "$table1" ]; then 
+cp -rf config/$table1/* config/input
+fi
+table2=$(cat evnconfig/info.md | grep "地区差异表" | grep -Po '(?<=地区差异表:).*' | sed 's/\r//g')
+if [ -n "$table2" ]; then 
+cp -rf config/$table2/* config/input
+fi
+table3=$(cat evnconfig/info.md | grep "提审差异表" | grep -Po '(?<=提审差异表:).*' | sed 's/\r//g')
+if [ -n "$table3" ]; then
+cp -rf config/$table3/* config/input
+fi
+
+cd config/ExcelConverter
+dotnet ExcelConverterConsole.dll ../input/ ../../
+cd ../../
+ls -lh
+\\cp -rf Server.Generate code/
+rm -rf publish/Bytes/
+mv package_debug/Bytes publish/
+'''
+
+            }
+
+        }
+        stage("编译代码"){
+            steps{
+sh '''
+export DOTNET_ROOT=/usr/local/dotnet
+export PATH=$DOTNET_ROOT:$PATH
+dotnet publish code/Server.Center/Server.Center.csproj -c Release -o publish
+dotnet publish code/Server.Logic/Server.Logic.csproj -c Release -o publish
+dotnet publish code/Server.Hotfix/Server.Hotfix.csproj -c Release -o publish
+
+# 置入开服活动
+rm -f publish/Configs/openServerActivity.json
+cp -f activity/openServerActivity.json  publish/Configs/openServerActivity.json
+  
+# 列出构建结果
+# ls -lh publish/
+# ls -lh publish/Bytes
+# ls -lh publish/Configs/
+
+# 删除不必要平台的 runtimes
+cd publish/runtimes/
+#rm -rf linux-arm linux-arm64 linux-armel osx osx-x64 win win-arm win-x64 win-x86
+cd ../../
+pwd
+'''
+
+            }
+
+        }
+        stage('传输代码') {
+            steps {
+                sh '''
+#!/bin/bash
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+
+rm -rf images app center_app center_app.tar.gz app.tar.gz  && mkdir -p images app center_app
+
+cp -r publish/* center_app/
+tar -zcf center_app.tar.gz center_app
+ls -lh center_app.tar.gz
+scp -i /var/jenkins_home/data/ssh_id/$ssh_id -P $port center_app.tar.gz root@$ip:/root/
+sleep 1
+scp -i /var/jenkins_home/data/ssh_id/$ssh_id -P $port evnconfig/center_app.sh root@$ip:/root/
+sleep 1
+cp -r publish/* app/
+tar -zcf app.tar.gz app
+ls -lh app.tar.gz
+scp -i /var/jenkins_home/data/ssh_id/$ssh_id -P 22 app.tar.gz root@$ip:/root/
+sleep 1
+scp -i /var/jenkins_home/data/ssh_id/$ssh_id -P 22 evnconfig/app.sh root@$ip:/root/
+sleep 1
+                '''
+            }
+        }
+        stage('上传基础镜像') {
+            when {
+                  equals expected: 'true', 
+                  actual: uploadImages
+                }
+            steps {
+                sh '''
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+
+#docker images -a | grep "192.168.8.2/20210615/game_server" | grep -v "none" | awk '{print $3}'
+
+tag="latest"
+docker build -t game_center_server:$tag -f dockerfile_game_center .
+
+docker save -o images/game_center_server.image game_center_server:$tag
+scp -i /var/jenkins_home/data/ssh_id/$ssh_id -r -P $port images root@$ip:/root/
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'docker load -i images/game_center_server.image' all -i hosts
+                '''
+            }
+        }
+        
+        stage('执行更新') {
+            steps {
+                sh '''
+#!/bin/bash
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'chmod a+x /root/center_app.sh' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'sh /root/center_app.sh' all -i hosts
+
+sleep 10
+
+if [ -z $(ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'docker ps -a ' all -i hosts | grep "game_center_server:latest" | grep "game_center_server_8888" | grep "Up") ]; then
+    echo "【错误】...部署失败..."
+    exit 1
+else
+    ansible -m command -a 'docker ps -a' all -i hosts
+fi
+                '''
+            }
+        }
+    } 
+} 

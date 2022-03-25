@@ -1,0 +1,395 @@
+pipeline {
+    agent any
+    
+    options {
+       timestamps() 
+    }
+
+    stages {
+        stage('连通性检测') {
+            steps {
+                sh '''
+#!/bin/bash
+
+# 配置 Ansuble 互信
+cat >  hosts << EOF
+[install]
+$IP ansible_ssh_port=$Port
+EOF
+ls -lh /var/jenkins_home/data/ssh_id/$SSH_ID
+if [ -z $( ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m ping all -i hosts | grep "SUCCESS" ) ]; then
+  echo "【错误】... Ansuble 互信失败..."
+  exit 1
+fi
+                '''
+            }
+        }
+        
+        stage('安装Redis') {
+            when {
+                  equals expected: 'true', 
+                  actual: installRedis
+                }
+            steps {
+                sh '''
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker pull redis' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker run -u root --name redis --restart=always -d -p 7000:6379 -v /data/redis:/data redis --requirepass "123456" --appendonly "yes"' all -i hosts
+                '''
+            }
+        }
+        
+        stage('安装Consul') {
+            when {
+                  equals expected: 'true', 
+                  actual: installBackMysqlCdkMongodbRechargeConsul
+                }
+            steps {
+                sh '''
+cat > consulKV.txt << EOF
+{
+  "CdkUrl":"http://121.37.16.228:5000/api/Cdk/GetCDKey?key={0}&roleId={1}&serverId={2}",
+  "RedisConfig":"$IP:7000,password=123456"
+}
+EOF
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker pull consul' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker run -p 8500:8500 --restart always -d --name=consul consul agent -server -bootstrap -ui -node=1 -client='0.0.0.0'' all -i hosts
+
+sleep 5
+
+curl -X PUT -d '@consulKV.txt' http://$IP:8500/v1/kv/$dataCenter/Common
+                '''
+            }
+        }
+        
+        stage('安装Mongodb') {
+            when {
+                  equals expected: 'true', 
+                  actual: installBackMysqlCdkMongodbRechargeConsul
+                }
+            steps {
+                sh '''
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker pull mongo:4.4' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker run -u root --name mongodb --restart=always -d -p 6666:27017 -v /data/mongodb:/data/db mongo:4.4' all -i hosts
+
+                '''
+            }
+        }
+        
+        stage('安装Mysql') {
+            when {
+                  equals expected: 'true', 
+                  actual: installBackMysqlCdkMongodbRechargeConsul
+                }
+            steps {
+                sh '''
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker pull mysql:5.7' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker run -u root --name mysql --restart=always -d -p 33060:3306 -e MYSQL_ROOT_PASSWORD=123456 -v /data/mysql:/var/lib/mysql mysql:5.7' all -i hosts
+
+sleep 1
+
+cat >> mysqld.cnf << EOF
+[mysqld]
+pid-file        = /var/run/mysqld/mysqld.pid
+socket          = /var/run/mysqld/mysqld.sock
+datadir         = /var/lib/mysql
+#log-error      = /var/log/mysql/error.log
+# By default we only accept connections from localhost
+#bind-address   = 127.0.0.1
+# Disabling symbolic-links is recommended to prevent assorted security risks
+symbolic-links=0
+[mysqld] 
+character-set-server=utf8
+collation-server=utf8_general_ci
+lower_case_table_names=1
+EOF
+
+scp -P $Port -i /var/jenkins_home/data/ssh_id/$SSH_ID mysqld.cnf $IP:/root
+
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker cp mysqld.cnf mysql:/etc/mysql/mysql.conf.d/mysqld.cnf' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker restart mysql' all -i hosts
+                '''
+            }
+        }
+
+        stage('部署CDK') {
+            when {
+                  equals expected: 'true', 
+                  actual: installBackMysqlCdkMongodbRechargeConsul
+                }
+            steps {
+                sh '''
+#!/bin/bash
+
+# 获取镜像版本号
+tagCdk=$(curl -k -u "admin:password" -XGET https://harbor.98.com/v2/back/game_server_cdk/tags/list |awk -F '[' '{print $2}'|awk -F ']' '{print $1}'|sed 's/"//g'  |sed 's/"//g' | sed 's/,/ /g' | awk '{print $NF}')
+
+# 生成配置文件
+cat > AppSetting.json << EOF
+{
+	"httpInnerCode": "chengdu98_inner_secretkey",
+	"httpCode": "chengdu98_hgame",
+	"httpUrl": "/history/logic",
+	"httpPort" : 5000,
+
+	"mongoDB": "game_hz_back",
+	"mongoUrl": "mongodb://$IP:6666?maxPoolSize=50&waitQueueMultiple=100&compressors=zlib"
+}
+EOF
+
+# 生成部署脚本
+cat > installCdk.sh << EOF
+#!/bin/bash
+
+docker rm -f game_server_cdk
+docker rmi game_server_cdk:latest
+docker load -i images/game_server_cdk.image
+docker run  --name game_server_cdk -p 5000:5000  --restart always -d game_server_cdk:latest
+
+sleep 1
+
+docker cp AppSetting.json game_server_cdk:/app/Configs/AppSetting.json
+docker restart game_server_cdk
+EOF
+
+# 拉取镜像
+rm -rf images && mkdir images
+docker pull harbor.98.com/back/game_server_cdk:$tagCdk
+docker tag harbor.98.com/back/game_server_cdk:$tagCdk game_server_cdk:latest
+docker save -o images/game_server_cdk.image game_server_cdk:latest
+docker rmi harbor.98.com/back/game_server_cdk:$tagCdk
+
+scp -P $Port -i /var/jenkins_home/data/ssh_id/$SSH_ID AppSetting.json $IP:/root
+scp -P $Port -i /var/jenkins_home/data/ssh_id/$SSH_ID installCdk.sh $IP:/root
+scp -P $Port -i /var/jenkins_home/data/ssh_id/$SSH_ID -r images $IP:/root
+
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'chmod a+x installCdk.sh ' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a './installCdk.sh ' all -i ./hosts
+if [ -z $(ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker ps -a' all -i hosts | grep "game_server_cdk:" | grep "Up") ]; then
+    echo "【错误】...部署失败..."
+    exit 1
+fi
+
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker ps' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker exec -it game_server_cdk cat /app/version.md' all -i hosts
+                '''
+            }
+        }
+
+        stage('部署充值服') {
+            when {
+                  equals expected: 'true', 
+                  actual: installBackMysqlCdkMongodbRechargeConsul
+                }
+            steps {
+                sh '''
+#!/bin/bash
+
+# 获取镜像版本号
+tagRecharge=$(curl -k -u "admin:password" -XGET https://harbor.98.com/v2/back/server_recharge/tags/list |awk -F '[' '{print $2}'|awk -F ']' '{print $1}'|sed 's/"//g'  |sed 's/"//g' | sed 's/,/ /g' | awk '{print $NF}')
+
+# 生成配置文件
+cat > server_config.json << EOF
+{
+    "isDebug": false,
+	"serverId": 9898,
+	"serverName": "充值服",
+	"loginQueueNum": 100,
+	"dataFlushTimeMax": 360,
+	"dataFlushTimeMin": 300,
+	"dataFPS": 3000,
+	"backupSpan": 60,
+	"backupRemainTime": 24,
+	"restoreToTime": "1999.01.01 12:30",
+	"httpInnerCode": "chengdu98_inner_secretkey",
+	"httpCode": "chengdu98_hgame",
+	"httpUrl": "/game98/logic",
+	"httpPort": 20000,
+	"tcpPort": 10000,
+	"grpcPort": 30000,
+	"useLibuv": true,
+	"centerTcpPort": 8888,
+	"centerHttpPort": 8889,
+	"rechargeHttpPort": 9898,
+	"sdkType": $SDKType,
+	"restoreFromFile": false,
+	"configCenterUrl": "http://$IP:8500/",
+	"dataCenter": "$dataCenter",
+	"mongoGlobalDB": "game_hz",
+	"language": "chinese"
+}
+EOF
+
+# 生成部署脚本
+cat > installRecharge.sh << EOF
+#!/bin/bash
+
+docker rm -f server_recharge
+docker rmi server_recharge:latest
+docker load -i images/server_recharge.image
+docker run  --name server_recharge -p 9898:9898  --restart always -d server_recharge:latest
+
+sleep 1
+
+docker cp server_config.json server_recharge:/app/Configs/server_config.json
+docker restart server_recharge
+EOF
+
+# 拉取镜像
+rm -rf images && mkdir images
+docker pull harbor.98.com/back/server_recharge:$tagRecharge
+docker tag harbor.98.com/back/server_recharge:$tagRecharge server_recharge:latest
+docker save -o images/server_recharge.image server_recharge:latest
+docker rmi harbor.98.com/back/server_recharge:$tagRecharge
+
+scp -P $Port -i /var/jenkins_home/data/ssh_id/$SSH_ID server_config.json $IP:/root
+scp -P $Port -i /var/jenkins_home/data/ssh_id/$SSH_ID installRecharge.sh $IP:/root
+scp -P $Port -i /var/jenkins_home/data/ssh_id/$SSH_ID -r images $IP:/root
+
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'chmod a+x installRecharge.sh ' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a './installRecharge.sh ' all -i ./hosts
+if [ -z $(ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker ps -a' all -i hosts | grep "server_recharge:" | grep "Up") ]; then
+    echo "【错误】...部署失败..."
+    exit 1
+fi
+
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker ps' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker exec -it server_recharge cat /app/version.md' all -i hosts
+                '''
+            }
+        }
+
+        stage('部署后台') {
+            when {
+                  equals expected: 'true', 
+                  actual: installBackMysqlCdkMongodbRechargeConsul
+                }
+            steps {
+                sh '''
+#!/bin/bash
+
+# 生成配置文件
+rm -rf config && mkdir config
+cat > config/appsettings.json << EOF
+{
+  "ConnectionStrings": {
+    "Default": "server=$IP;Port=33060;User Id=root;password=123456;database=backstage_db;charset=utf8;",
+    "Hangfire": "server=$IP;Port=33060;User Id=root;password=123456;database=hangfire_db;charset=utf8;Allow User Variables=true;"
+  },
+  "GameConfigs": {
+    "CdkUrl": "http://$IP:5000",
+    "CDKeyMongodbConnectionStrings": "mongodb://$IP:6666?waitQueueMultiple=50&compressors=zlib",
+    "CDKeyMongodbName": "game_hz_back",
+    "SDKType": $SDKType,
+    "GameDebug": "true",
+    "GameLanguage": "english",
+    "DbPrefix": "moya",
+    "Channel": "moya",
+    "Interval": 5,
+    "ConsulUrl": "http://$IP:8500",
+    "MonitorUrl": "",
+    "MonitorSecret": ""
+  },
+  "App": {
+    "ServerRootAddress": "http://*:21021/",
+    "ClientRootAddress": "http://*:4200/",
+    "CorsOrigins": "http://$IP:4200,http://localhost:4200,http://localhost:4201,http://localhost:8080,http://localhost:8081,http://localhost:3000"
+  },
+  "Authentication": {
+    "JwtBearer": {
+      "IsEnabled": "true",
+      "SecurityKey": "SmartServer_C421AAEE0D114E9C",
+      "Issuer": "SmartServer",
+      "Audience": "SmartServer"
+    }
+  },
+  "Kestrel": {
+    "Endpoints": {
+      "Http": {
+        "Url": "http://*:21021/"
+      }
+    }
+  }
+}
+EOF
+
+cat > config/baseUrl.json << EOF
+{
+  "url":"http://$IP:21021/api/services/app"
+}
+EOF
+
+# 获取镜像版本号
+tagBackUi=$(curl -k -u "admin:password" -XGET https://harbor.98.com/v2/back/game_server_back_ui/tags/list |awk -F '[' '{print $2}'|awk -F ']' '{print $1}'|sed 's/"//g'  |sed 's/"//g' | sed 's/,/ /g' | awk '{print $NF}')
+tagBack=$(curl -k -u "admin:password" -XGET https://harbor.98.com/v2/back/game_server_back/tags/list |awk -F '[' '{print $2}'|awk -F ']' '{print $1}'|sed 's/"//g'  |sed 's/"//g' | sed 's/,/ /g' | awk '{print $NF}')
+
+rm -rf images && mkdir images
+docker pull harbor.98.com/back/game_server_back_ui:$tagBackUi
+docker pull harbor.98.com/back/game_server_back:$tagBack
+docker tag harbor.98.com/back/game_server_back_ui:$tagBackUi game_server_back_ui:latest
+docker tag harbor.98.com/back/game_server_back:$tagBack game_server_back:latest
+docker rmi harbor.98.com/back/game_server_back_ui:$tagBackUi
+docker rmi harbor.98.com/back/game_server_back:$tagBack
+docker save -o images/game_server_back_ui.image game_server_back_ui:latest
+docker save -o images/game_server_back.image game_server_back:latest
+
+cat > installBack.sh << EOF
+#!/bin/bash
+
+docker rm -f game_server_back_ui
+docker rm -f game_server_back
+docker rmi game_server_back_ui:latest
+docker rmi game_server_back:latest
+docker load -i /root/images/game_server_back_ui.image
+docker load -i /root/images/game_server_back.image
+docker run  --name game_server_back_ui -p 4200:4200 -v /etc/localtime:/etc/localtime:ro --restart always -d game_server_back_ui:latest
+
+sleep 1
+
+docker cp baseUrl.json game_server_back_ui:/usr/share/nginx/html/assets/tmp/baseUrl.json
+docker restart game_server_back_ui
+docker run  --name game_server_back -p 21021:21021 -v /etc/localtime:/etc/localtime:ro -v /data/game/prod/back/data/game_server/source:/app/data/game_server/source -v /data/game/prod/back/App_Data/Logs:/app/App_Data/Logs --restart always -d game_server_back:latest
+
+sleep 1
+
+docker cp appsettings.json game_server_back:/app/appsettings.json 
+docker restart game_server_back
+EOF
+
+# 传输镜像及脚本
+
+scp -P $Port -i /var/jenkins_home/data/ssh_id/$SSH_ID config/appsettings.json $IP:/root
+scp -P $Port -i /var/jenkins_home/data/ssh_id/$SSH_ID config/baseUrl.json $IP:/root
+scp -P $Port -i /var/jenkins_home/data/ssh_id/$SSH_ID installBack.sh $IP:/root
+scp -P $Port -i /var/jenkins_home/data/ssh_id/$SSH_ID -r images $IP:/root
+
+# 赋予脚本执行权限然后在目标主机执行脚本
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'chmod a+x installBack.sh' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a './installBack.sh ' all -i hosts
+
+sleep 5
+containerBack=$(ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker ps -a' all -i hosts | grep "game_server_back:" | grep "Up")
+containerBackUi=$(ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker ps -a' all -i hosts | grep "game_server_back_ui:" | grep "Up")
+if [ -z $containerBack ] || [ -z $containerBackUi ]; then
+    cat ~/empty
+    echo "【错误】...部署失败..."
+    exit 1
+fi
+
+# 列出所有运行中容器
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'docker ps' all -i hosts
+                '''
+            }
+        }
+    }
+    post {
+        always {
+            sh '''
+            rm -rf *
+            docker rmi game_server_cdk:latest
+            docker rmi server_recharge:latest
+            docker rmi game_server_back_ui:latest
+            docker rmi game_server_back:latest
+            '''
+        }
+    }
+}

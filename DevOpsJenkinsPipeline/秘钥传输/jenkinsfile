@@ -1,0 +1,77 @@
+pipeline{
+    agent any
+    parameters {
+        text description: '一行一个，可批量执行', name: 'Hosts_IP'
+        text description: '一行一个，可批量执行', name: 'Hosts_Password'
+        choice choices:['22'],name:'port'
+        choice choices:['root'],name:'user'
+          choice choices: ['hz_intranet_rsa', 'gosu_vn_rsa', 'moshu_rsa', 'moya_eur_rsa', 'moya_hk_rsa', 'moya_kr_rsa', 'moya_usa_rsa'], description: '''hz_intranet_rsa    //内网
+moshu_rsa      //魔术
+moya_eur_rsa   //魔亚欧洲
+moya_usa_rsa   //魔亚北美
+moya_kr_rsa    //魔亚韩国
+moya_hk_rsa    //魔亚港台
+gosu_vn_rsa    //GOSU越南''', name: 'SSH_ID'
+    }
+    stages{
+        stage("Ansubl 互信初始化"){
+            steps{ 
+sh '''
+#!/bin/bash -e
+# 列出密钥目录
+ls /var/jenkins_home/data/ssh_id
+
+# 创建 Ansuble 主机列表$End"
+cat > Ansuble_Hosts << EOF
+[install]
+$Hosts_IP ansible_ssh_port=$port ansible_ssh_user=$user
+EOF
+cat Ansuble_Hosts
+
+# 创建IP列表
+cat > Hosts_IP << EOF
+$Hosts_IP
+EOF
+
+# 创建密码列表
+cat > Hosts_Password << EOFF
+$Hosts_Password
+EOFF
+
+# 列出要互信的主机IP
+cat Ansuble_Hosts
+'''
+            } 
+        }
+        stage("互信")
+        {
+            steps{
+sh '''
+#!/bin/bash  
+echo "【消息】>>>批量传输密钥"
+Number=$(cat Hosts_IP | awk 'END{print NR}')
+echo "【消息】...一共有$Number台主机将要传输密钥..."
+
+for Hosts in `seq 1 $Number`; do
+sleep 2
+expect <<EOF
+spawn ssh-copy-id -i /var/jenkins_home/data/ssh_id/$SSH_ID.pub -f -p $port root@$(cat Hosts_IP | sed -n ''"${Hosts}"'p')
+expect {
+	"yes/no" {send "yes\n";exp_continue}
+	"password" {send "$(cat Hosts_Password | sed -n ''"${Hosts}"'p')\n"}
+}
+expect eof
+EOF
+done
+
+Ping=$( ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m ping all -i Ansuble_Hosts | grep "SUCCESS" )
+if [ -z "$Ping" ]; then 
+echo "【错误】... Ansuble 互信失败..."
+exit 1
+fi
+'''
+            }
+
+        }
+    } 
+}

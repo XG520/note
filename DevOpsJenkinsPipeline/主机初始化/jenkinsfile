@@ -1,0 +1,418 @@
+pipeline{
+    agent any 
+    parameters {
+        text(name: 'Hosts_IP', defaultValue: '', description: '')
+        choice(name: 'installDocker', choices: ['不安装', '下载安装', '传输安装'], description: '')
+        choice(name: 'installFilebeat', choices: ['不安装', '下载安装', '传输安装'], description: '')
+        //choice(name: 'evn', choices: ['GOSU_越南_内网','秦明_后台'], description: '')
+    }
+    environment{
+        server_path="http://192.168.0.69:8080/svn/HGame/server"
+        client_path="http://192.168.0.69:8080/svn/HGame/client"
+        config_path="http://192.168.0.69:8080/svn/common/Config/DevOpsJenkinsPipeline/evn_config"
+        username="wangsiwei"
+        password="wangsiwei123" 
+        harbor_url="192.168.8.2"
+    }
+    stages{
+      stage("拉取配置文件")
+        {
+            environment{
+                server_full_path="$config_path/${evn}@HEAD"
+            }
+            steps{
+                sh '''
+#!/bin/bash
+rm -rf *
+# 拉取对应配置文件
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q  $server_full_path evnconfig
+cat ./evnconfig/info.md
+                '''
+            }
+        }
+      stage("配置文件信息"){
+        steps{
+sh''' 
+#!/bin/sh -e
+echo "=========SVN 配置信息==========="
+pwd 
+echo 'SVN上【$evn】配置信息'
+cat evnconfig/info.md 
+echo "Hosts_IP:$Hosts_IP \r\n" +"installDocker:$installDocker \r\n"+"installFilebeat:$installFilebeat \r\n"+"evn:$evn \r\n"
+echo "================================"
+'''
+        }
+
+      }
+ 
+  
+    stage('创建主机列')
+    { 
+      steps{ 
+
+
+sh '''
+#!/bin/bash
+
+# 创建 Ansuble 主机列表"
+cat > Ansuble_Hosts << EOF
+[install]
+EOF
+
+# 创建IP列表
+cat > Hosts_IP << EOF
+$Hosts_IP
+EOF
+
+prot=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+user=$(cat evnconfig/info.md | grep "用户名" | grep -Po '(?<=用户名:).*' | sed 's/\r//g')
+
+Number=$(cat Hosts_IP | awk 'END{print NR}')
+for Hosts in `seq 1 $Number`; do
+cat Hosts_IP | sed -n ''"${Hosts}"'p' | awk '$0=$0 " ansible_ssh_port='$prot' ansible_ssh_user='$user'"' >> Ansuble_Hosts
+done
+
+# 创建Docker所需的配置文件
+cat > /var/jenkins_home/data/initialization/docker/daemon.json <<EOF
+{
+  "registry-mirrors": ["https://japuu0nh.mirror.aliyuncs.com"],
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+  "max-size": "100m"
+  },
+  "storage-driver": "overlay2",
+  "storage-opts": [
+  "overlay2.override_kernel_check=true"
+  ]
+}
+EOF
+
+echo ${installDocker}
+echo ${installFilebeat} 
+'''
+
+      }
+    }
+    stage('连通性检测')
+    {
+      steps
+      {
+sh ''' 
+secret_key=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+cat Ansuble_Hosts 
+ls -lh /var/jenkins_home/data/ssh_id/$secret_key
+if [ -z "$( ansible --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -m ping all -i Ansuble_Hosts | grep "SUCCESS" )" ]; then
+  echo "【错误】... Ansuble 互信失败..."
+  exit 1
+fi
+'''
+
+      }
+
+    }
+    stage('初始化确认')
+    {
+    
+      input {
+                message '环境确认'
+                ok "确认"
+                submitter "取消"
+                parameters {
+                    string(name: 'Confirm', description: '请输入“我已经确认”')
+                }
+            }
+      steps{
+
+          echo "初始化环境: ${evn}"
+          echo "主机IP: ${Hosts_IP}"
+          echo "是否安装Docker: ${installDocker}"
+          echo "是否安装Filebeat: ${installFilebeat}"  
+      }
+ 
+    }
+    stage("调整主机时区")
+    {
+      steps{
+        sh '''
+        #!/bin/bash
+        secret_key=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+        time_zone="timedatectl set-timezone $(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g')" 
+        ansible --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -m shell -a "$time_zone" all -i Ansuble_Hosts
+        '''
+      }
+    }
+    stage('获取Docker安装包')
+    {
+        when {
+          not{
+            environment name: 'installDocker',
+            value: '不安装'
+          }
+        }
+        steps
+        { 
+sh '''
+#!/bin/bash
+secret_key=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+prot=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+user=$(cat evnconfig/info.md | grep "用户名" | grep -Po '(?<=用户名:).*' | sed 's/\r//g')
+if [ "$installDocker" = "传输安装" ]; then
+    Number=$(cat Hosts_IP | awk 'END{print NR}')
+
+    for Hosts in `seq 1 $Number`; do
+    cat Hosts_IP | sed -n ''"${Hosts}"'p'
+    scp -P $prot -i /var/jenkins_home/data/ssh_id/$secret_key -r /var/jenkins_home/data/initialization/docker $user@$(cat Hosts_IP | sed -n ''"${Hosts}"'p'):/root/
+    done
+fi
+
+if [ "$installDocker" = "下载安装" ]; then 
+    ansible --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -m shell -a 'mkdir -p /root/docker' all -i Ansuble_Hosts
+    Number=$(cat Hosts_IP | awk 'END{print NR}')
+    for Hosts in `seq 1 $Number`; do
+    cat Hosts_IP | sed -n ''"${Hosts}"'p'
+    scp -P $prot -i /var/jenkins_home/data/ssh_id/$secret_key -r /var/jenkins_home/data/initialization/docker/daemon.json $user@$(cat Hosts_IP | sed -n ''"${Hosts}"'p'):/root/docker/
+    done
+    ansible --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -m shell -a 'curl -o /root/docker/docker-ce-19.03.14-3.el7.x86_64.rpm https://download.docker.com/linux/centos/7/x86_64/stable/Packages/docker-ce-19.03.14-3.el7.x86_64.rpm' all -i Ansuble_Hosts
+    ansible --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -m shell -a 'curl -o /root/docker/docker-ce-cli-19.03.14-3.el7.x86_64.rpm https://download.docker.com/linux/centos/7/x86_64/stable/Packages/docker-ce-cli-19.03.14-3.el7.x86_64.rpm' all -i Ansuble_Hosts
+    ansible --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -m shell -a 'curl -o /root/docker/containerd.io-1.3.9-3.1.el7.x86_64.rpm https://download.docker.com/linux/centos/7/x86_64/stable/Packages/containerd.io-1.3.9-3.1.el7.x86_64.rpm' all -i Ansuble_Hosts
+fi
+'''
+      }
+
+    }
+    stage('安装Docker')
+    {
+      when {
+          not{
+            environment name: 'installDocker',
+            value: '不安装'
+          }
+        }
+        steps
+        {
+sh '''
+#!/bin/bash
+secret_key=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+# 创建Ansible PlayBook
+cat > initDocker.yml << EOF
+- hosts: install
+  remote_user: root
+  tasks:
+    - name: 替换Yum源
+      shell: curl -o /etc/yum.repos.d/CentOS-Base.repo http://mirrors.163.com/.help/CentOS7-Base-163.repo
+    - name: 刷新Yum源
+      shell: yum makecache
+    - name: 关闭SeLinux
+      shell: setenforce 0 && sed -i "s/SELINUX=enforcing/SELINUX=disabled/g" /etc/selinux/config
+      ignore_errors: yes
+    - name: 关闭防火墙
+      shell: systemctl stop firewalld && systemctl disable firewalld
+    - name: 检测是否需要安装Docker
+      shell: yum list installed | grep containerd.io | awk 'END{print NR}'
+      register: docker
+    - name: 打印检测结果
+      debug:
+        msg: "检测结果为 {{docker.stdout.find('1')}} ，-1为安装，0为不安装"
+    - name: 卸载Docker
+      shell: yum remove -y docker docker-client docker-client-latest docker-ce-cli docker-common docker-latest docker-latest-logrotate docker-logrotate docker-selinux docker-engine-selinux docker-engine
+      when: docker.stdout.find('1') == -1
+    - name: 安装Docker
+      shell: yum install -y /root/docker/*
+      when: docker.stdout.find('1') == -1
+    - name: 更换Docker镜像源
+      shell: mkdir /etc/docker || true && cp -f /root/docker/daemon.json /etc/docker/
+      when: docker.stdout.find('1') == -1
+    - name: 配置IPtables
+      shell: yum -y install iptables-services && systemctl start iptables && systemctl enable iptables && iptables -F && service iptables save
+      when: docker.stdout.find('1') == -1
+    - name: 启动Docker
+      shell: systemctl enable docker && systemctl daemon-reload && systemctl restart docker && docker version
+    - name: 查看docker
+      shell: docker ps -a 
+EOF
+
+ansible-playbook initDocker.yml --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -v -f 10 -i Ansuble_Hosts
+''' 
+        }
+      }
+        stage('获取Filebeat安装包')
+        {
+            when {
+                not{
+                    environment name: 'installFilebeat',
+                    value: '不安装'
+                }
+            }
+            steps
+            {
+sh '''
+secret_key=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+user=$(cat evnconfig/info.md | grep "用户名" | grep -Po '(?<=用户名:).*' | sed 's/\r//g')
+prot=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ansible --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -m shell -a 'mkdir -p /root/filebeat' all -i Ansuble_Hosts
+for ip in $(cat Hosts_IP ); do \
+  scp -P $prot -i /var/jenkins_home/data/ssh_id/$secret_key evnconfig/filebeat.yml $user@$ip:/root/filebeat
+done
+
+
+if [ "$installFilebeat" = "传输安装" ]; then
+    for ip in $(cat Hosts_IP ); do \
+      scp -P $prot -i /var/jenkins_home/data/ssh_id/$secret_key  /var/jenkins_home/data/initialization/filebeat/filebeat.image $user@$ip:/root/filebeat
+    done
+
+fi
+if [ "$installFilebeat" = "下载安装" ]; then
+  Number=$(cat Hosts_IP | awk 'END{print NR}')
+  for Hosts in `seq 1 $Number`; do 
+  ansible --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -m shell -a 'docker pull elastic/filebeat:7.9.3' all -i Ansuble_Hosts
+  done 
+fi
+'''
+            }
+
+        }
+        stage('安装Filebeat')
+        {
+          when {
+                not{
+                    environment name: 'installFilebeat',
+                    value: '不安装'
+                }
+            }
+            steps{
+sh '''
+#!/bin/bash
+secret_key=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+# 创建Ansible PlayBook
+cat > initFilebeat.yml << EOF
+- hosts: install
+  remote_user: root
+  tasks:
+    - name: 检测是否已经安装Docker
+      shell: yum list installed | grep containerd.io | awk 'END{print NR}'
+      register: docker
+    - name: 打印检测结果
+      debug:
+        msg: "检测结果为 {{docker.stdout.find('1')}} ，0为已安装，-1为未安装"
+    - name: 检测是否需要安装日志采集
+      shell: ls /root | grep filebeat | awk 'END{print NR}'
+      register: filebeat
+      when: docker.stdout.find('1') == 0
+    - name: 打印检测结果
+      debug:
+        msg: "检测结果为 {{filebeat.stdout.find('1')}} ，0为安装，-1为不安装"
+      when: docker.stdout.find('1') == 0
+    - name: 删除filebeat
+      shell: docker rm -f filebeat || docker ps
+    - name: 安装日志采集
+      shell: rm -rf /filebeat_data || docker load -i /root/filebeat/filebeat.image && mkdir /filebeat_data && cp /root/filebeat/filebeat.yml /filebeat_data/ && docker run -u root -d --restart=always --name=filebeat -v /data/game_server/target/Logs:/var/log/gamelog/ -v /filebeat_data/filebeat.yml:/usr/share/filebeat/filebeat.yml -v /filebeat_data/registry/:/usr/share/filebeat/data/registry/ elastic/filebeat:7.9.3
+      when: filebeat.stdout.find('1') == 0
+    - name: 查看docker
+      shell: docker ps -a 
+EOF
+
+ansible-playbook initFilebeat.yml --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -v -f 10 -i Ansuble_Hosts
+                '''
+
+            }
+        }
+        stage('转移docker')
+        {
+          when {
+                not{
+                    environment name: 'installDocker',
+                    value: '不安装'
+                }
+            }
+            steps{ 
+sh '''
+secret_key=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+prot=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+user=$(cat evnconfig/info.md | grep "用户名" | grep -Po '(?<=用户名:).*' | sed 's/\r//g')
+
+cat > docker.sh <<EOF
+docker stop -t 600 $(docker ps -a -q)
+mkdir /data || cp -R /var/lib/docker/ /data && chmod 777 -R /data/docker 
+systemctl daemon-reload && systemctl restart docker && docker ps -a
+EOF
+
+cat > daemon.json <<EOF
+{
+  "registry-mirrors": ["https://japuu0nh.mirror.aliyuncs.com"],
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2",
+  "storage-opts": [
+    "overlay2.override_kernel_check=true"
+  ],
+  "data-root":"/data/docker"
+}
+EOF
+
+Number=$(cat Hosts_IP | awk 'END{print NR}')
+for Hosts in `seq 1 $Number`; do
+cat Hosts_IP | sed -n ''"${Hosts}"'p'
+scp -P $prot -i /var/jenkins_home/data/ssh_id/$secret_key docker.sh $user@$(cat Hosts_IP | sed -n ''"${Hosts}"'p'):/root/
+scp -P $prot -i /var/jenkins_home/data/ssh_id/$secret_key daemon.json $user@$(cat Hosts_IP | sed -n ''"${Hosts}"'p'):/etc/docker/
+done
+
+cat > Docker.yml << EOF
+- hosts: install
+  remote_user: root
+  tasks:
+    - name: 检测是否需要安装Docker
+      shell: yum list installed | grep containerd.io | awk 'END{print NR}'
+      register: docker
+    - name: 打印检测结果
+      debug:
+        msg: "检测结果为 {{docker.stdout.find('1')}} ，-1为安装，0为不安装"
+    - name: 加权限
+      shell: chmod a+x docker.sh
+      when: docker.stdout.find('1') == -1
+    - name: 执行转移docker脚本
+      shell: ./docker.sh
+      when: docker.stdout.find('1') == -1
+EOF
+
+ansible-playbook Docker.yml --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -v -f 10 -i Ansuble_Hosts
+            '''
+            }
+        }
+
+        stage('检查信息'){
+            steps{
+                sh '''
+secret_key=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+prot=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+user=$(cat evnconfig/info.md | grep "用户名" | grep -Po '(?<=用户名:).*' | sed 's/\r//g')
+#!/bin/bash
+
+cat > data.sh << "EOF"
+#!/bin/bash
+echo "cpu数：$(cat /proc/cpuinfo | grep "physical id" | wc -l)"
+echo "内存：$(cat /proc/meminfo | grep "MemTotal" | awk -F " " '{print $2$3}')"
+echo "版本号：$(more /etc/redhat-release)"
+echo "docker状态：$(systemctl status docker | sed -nr "3s#^.*Active: (.*) since.*#\\1#gp")"
+echo "docker安装位置：$(docker info | grep "Docker Root Dir" | awk -F ": " '{print $2}')"
+echo "日志地址：$(cat -n /filebeat_data/filebeat.yml | sed -nr "30s#^.*\\[\\"(.*)\\"\\].*#\\1#gp")"
+echo "filebeat时区：$(cat /filebeat_data/filebeat.yml | grep "timezone" | awk -F ": " '{print $2}')"
+EOF
+
+Number=$(cat Hosts_IP | awk 'END{print NR}')
+for Hosts in `seq 1 $Number`; do
+cat Hosts_IP | sed -n ''"${Hosts}"'p'
+scp -P $prot -i /var/jenkins_home/data/ssh_id/$secret_key data.sh $user@$(cat Hosts_IP | sed -n ''"${Hosts}"'p'):/root/
+done
+
+ansible --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -m shell -a 'chmod a+x data.sh' all -i Ansuble_Hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$secret_key" -m shell -a './data.sh' all -i Ansuble_Hosts
+            '''
+            }
+        }
+    }
+}

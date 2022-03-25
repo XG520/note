@@ -1,0 +1,14 @@
+端口:22
+用户名:root
+秘钥:hz_intranet_rsa
+时区:America/New_York
+tag:hz_moya_hk
+branch:20210803
+后台地址:192.168.1.216
+游戏服地址:192.168.1.216
+server_path:http://192.168.0.69:8080/svn/HGame/server/20210803
+client_path:http://192.168.0.69:8080/svn/HGame/client/20210803
+ESIP：127.0.0.1
+渠道差异表:input-海外-魔亚-港台
+地区差异表:
+提审差异表:

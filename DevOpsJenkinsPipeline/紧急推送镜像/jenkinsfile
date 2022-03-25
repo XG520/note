@@ -1,0 +1,233 @@
+pipeline {
+    agent any
+    environment{
+        config_path="http://192.168.0.69:8080/svn/Common/Config/DevOpsJenkinsPipeline/evn_config"
+        username="wangsiwei"
+        password="wangsiwei123"
+        harbor_url="192.168.8.2"
+    }
+    options {
+       timestamps() 
+    } 
+    stages { 
+        stage("拉取配置文件")
+        {
+            environment{
+                server_full_path="$config_path/${evn}@HEAD"
+            }
+            steps{
+                sh '''
+#!/bin/bash
+rm -rf *
+# 拉取对应配置文件
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q  $server_full_path evnconfig
+cat ./evnconfig/info.md
+                '''
+            }
+        }
+        stage("连通性检测")
+        {            
+            steps{
+                sh '''
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+user=$(cat evnconfig/info.md | grep "用户名" | grep -Po '(?<=用户名:).*' | sed 's/\r//g')
+
+cat > hosts << EOF
+[install]
+$ip ansible_ssh_port=$port ansible_ssh_user=$user
+EOF
+if [ -z "$( ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m ping all -i hosts | grep "SUCCESS" )" ]; then
+    echo "【错误】... Ansuble 互信失败..."
+    exit 1
+fi
+'''
+            }
+        }
+
+        stage('充值服') 
+        {
+            when {
+                  equals expected: 'true', 
+                  actual: 充值服
+                }
+            steps {
+                sh '''
+#!/bin/bash
+# 拉取最新版本镜像
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+tag=$(cat evnconfig/info.md | grep "tag" | grep -Po '(?<=tag:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+
+#编写 recharge_dockerfile
+cat > recharge_dockerfile << EOF
+FROM $harbor_url/$branch/server_recharge:$tag
+WORKDIR /app
+COPY ./evnconfig/recharge_config.json .
+RUN rm -rf ./Configs/server_config.json && mv recharge_config.json ./Configs/server_config.json
+ENTRYPOINT ["dotnet","Server.Recharge.dll"]
+EOF
+
+#生成执行脚本
+cat > installRecharge.sh << EOF
+#!/bin/bash
+
+docker rm -f server_recharge
+docker rmi server_recharge:latest
+docker load -i /root/recharge/server_recharge.image
+docker run  --name server_recharge -p 9898:9898  --restart always -v /etc/localtime:/etc/localtime:ro -d server_recharge:latest
+docker restart server_recharge
+EOF
+
+#拉取镜像
+docker pull $harbor_url/$branch/server_recharge:$tag
+docker build -t server_recharge:latest -f recharge_dockerfile .
+docker save -o server_recharge.image server_recharge:latest
+docker rmi -f $harbor_url/$branch/server_recharge:$tag
+docker rmi -f server_recharge:latest
+
+#传输镜像
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'mkdir -p /root/recharge' all -i hosts
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $port server_recharge.image $ip:/root/recharge
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $port installRecharge.sh $ip:/root/recharge
+
+'''
+            }
+        }
+
+        stage('CDK') 
+        {
+            when {
+                  equals expected: 'true', 
+                  actual: CDK
+                }
+            steps {
+                sh '''
+#!/bin/bash
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+tag=$(cat evnconfig/info.md | grep "tag" | grep -Po '(?<=tag:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+
+#编写 cdk_dockerfile
+cat > cdk_dockerfile << EOF
+FROM $harbor_url/$branch/game_server_cdk:$tag
+WORKDIR /app
+COPY ./evnconfig/cdk_config.json .
+RUN rm -rf ./Configs/server_config.json && mv cdk_config.json ./Configs/AppSetting.json
+ENTRYPOINT ["dotnet","CDKeyServer.dll"]
+EOF
+
+#生成执行脚本
+cat > installCdk.sh << EOF
+#!/bin/bash
+
+docker rm -f game_server_cdk
+docker rmi game_server_cdk:latest
+docker load -i /root/CDK/game_server_cdk.image
+docker run  --name game_server_cdk -p 5000:5000  --restart always -v /etc/localtime:/etc/localtime:ro -d game_server_cdk:latest
+docker restart game_server_cdk
+EOF
+
+#拉取镜像
+docker pull $harbor_url/$branch/game_server_cdk:$tag
+docker build -t game_server_cdk:latest -f cdk_dockerfile .
+docker save -o game_server_cdk.image game_server_cdk:latest
+docker rmi -f $harbor_url/$branch/game_server_cdk:$tag
+docker rmi -f game_server_cdk:latest
+
+#传输镜像
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'mkdir -p /root/CDK' all -i hosts
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $port game_server_cdk.image $ip:/root/CDK
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $port installCdk.sh $ip:/root/CDK
+'''
+            }
+        }
+
+        stage('API') 
+        {
+            when {
+                  equals expected: 'true', 
+                  actual: API
+                }
+            steps {
+                sh '''
+#!/bin/bash
+tagBack=$(curl -k -u "admin:admin_0000" -XGET https://$harbor_url/v2/back/game_server_back/tags/list |awk -F '[' '{print $2}'|awk -F ']' '{print $1}'|sed 's/"//g'  |sed 's/"//g' | sed 's/,/ /g' | awk '{print $NF}')
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+
+#拉取镜像
+docker pull $harbor_url/back/game_server_back:$tagBack
+docker tag $harbor_url/back/game_server_back:$tagBack game_server_back:latest
+docker save -o game_server_back.image game_server_back:latest
+docker rmi $harbor_url/back/game_server_back:$tagBack
+docker rmi game_server_back:latest
+
+#生成执行脚本
+cat > installBack.sh << EOF
+#!/bin/bash
+
+docker rm -f game_server_back
+docker rmi game_server_back:latest
+docker load -i /root/API/game_server_back.image
+docker run  --name game_server_back -p 21021:21021  -v /data/game/prod/back/data/game_server/source:/app/data/game_server/source -v /data/game/prod/back/App_Data/Logs:/app/App_Data/Logs --restart always -d game_server_back:latest
+docker cp /root/API/appsettings.json game_server_back:/app/appsettings.json 
+docker restart game_server_back
+EOF
+
+#传输镜像
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'mkdir -p /root/API' all -i hosts
+scp -i /var/jenkins_home/data/ssh_id/$ssh_id -P $port evnconfig/appsettings.json $ip:/root/API
+scp -i /var/jenkins_home/data/ssh_id/$ssh_id -P $port installBack.sh $ip:/root/API
+scp -i /var/jenkins_home/data/ssh_id/$ssh_id -P $port game_server_back.image $ip:/root/API
+
+'''
+            }
+        }
+
+        stage('UI') 
+        {
+            when {
+                  equals expected: 'true', 
+                  actual: UI
+                }
+            steps {
+                sh '''
+#!/bin/bash
+tagUI=$(curl -k -u "admin:admin_0000" -XGET https://$harbor_url/v2/back/game_server_back_ui/tags/list |awk -F '[' '{print $2}'|awk -F ']' '{print $1}'|sed 's/"//g'  |sed 's/"//g' | sed 's/,/ /g' | awk '{print $NF}')
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+
+#拉取镜像
+docker pull $harbor_url/back/game_server_back_ui:$tagUI
+docker tag $harbor_url/back/game_server_back_ui:$tagUI game_server_back_ui:latest
+docker save -o game_server_back_ui.image game_server_back_ui:latest
+docker rmi $harbor_url/back/game_server_back_ui:$tagUI
+docker rmi game_server_back_ui:latest
+
+#生成执行脚本
+cat > installBack_ui.sh << EOF
+#!/bin/bash
+
+docker rm -f game_server_back_ui
+docker rmi game_server_back_ui:latest
+docker load -i /root/UI/game_server_back_ui.image
+docker run  --name game_server_back_ui -p 4200:4200 --restart always -d game_server_back_ui:latest
+docker cp /root/UI/baseUrl.json game_server_back_ui:/usr/share/nginx/html/assets/tmp/baseUrl.json
+docker restart game_server_back_ui
+EOF
+
+#传输镜像
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'mkdir -p /root/UI' all -i hosts
+scp -i /var/jenkins_home/data/ssh_id/$ssh_id -P $port evnconfig/baseUrl.json $ip:/root/UI
+scp -i /var/jenkins_home/data/ssh_id/$ssh_id -P $port installBack_ui.sh $ip:/root/UI
+scp -i /var/jenkins_home/data/ssh_id/$ssh_id -P $port game_server_back_ui.image $ip:/root/UI
+
+'''
+            }
+        }
+    }
+}

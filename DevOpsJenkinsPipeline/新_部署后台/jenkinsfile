@@ -1,0 +1,175 @@
+pipeline {
+    agent any
+    
+    options {
+       timestamps() 
+    }
+    environment{
+        server_path="http://192.168.0.69:8080/svn/common/ManageSystem/Branches/SmartServer0220"
+        client_path="http://192.168.0.69:8080/svn/common/ManageSystem/Branches/SmartClient0220"
+        config_path="http://192.168.0.69:8080/svn/common/Config/DevOpsJenkinsPipeline/evn_config"
+        username="wangsiwei"
+        password="wangsiwei123" 
+        harbor_url="192.168.8.2"
+
+    }
+
+    stages {
+        stage("拉取配置文件")
+        {
+            environment{
+                config_full_path="$config_path/${evn}@HEAD"
+            }
+            steps{
+                sh '''
+#!/bin/bash
+rm -rf *
+# 拉取对应配置文件
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q  $config_full_path evnconfig
+cat ./evnconfig/info.md
+
+
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+user=$(cat evnconfig/info.md | grep "用户名" | grep -Po '(?<=用户名:).*' | sed 's/\r//g')
+# 配置 Ansuble 互信
+cat >  hosts << EOF
+[install]
+$ip ansible_ssh_port=$port ansible_ssh_user=$user
+EOF
+                '''
+            }
+        }
+        stage('拉取镜像') {
+            steps {
+                sh '''
+#!/bin/bash
+tag=$(cat evnconfig/info.md | grep "tag" | grep -Po '(?<=tag:).*' | sed 's/\r//g')
+# 生成部署脚本
+cat > installBack_ui.sh << EOF
+#!/bin/bash
+
+docker rm -f game_server_back_ui
+docker rmi game_server_back_ui:latest
+docker load -i /root/game_server_back_ui.image
+docker run  --name game_server_back_ui -p 4200:4200 --restart always -d game_server_back_ui:latest
+docker cp baseUrl.json game_server_back_ui:/usr/share/nginx/html/assets/tmp/baseUrl.json
+docker restart game_server_back_ui
+EOF
+
+cat > installBack.sh << EOF
+#!/bin/bash
+
+docker rm -f game_server_back
+docker rmi game_server_back:latest
+docker load -i /root/game_server_back.image
+docker run  --name game_server_back -p 21021:21021  -v /data/game/prod/back/data/game_server/source:/app/data/game_server/source -v /data/game/prod/back/App_Data/Logs:/app/App_Data/Logs --restart always -d game_server_back:latest
+docker cp appsettings.json game_server_back:/app/appsettings.json 
+docker restart game_server_back
+EOF
+
+# 拉取镜像
+rm -rf images && mkdir images
+docker pull $harbor_url/back/game_server_back_ui:$tag
+docker pull $harbor_url/back/game_server_back:$tag
+docker tag $harbor_url/back/game_server_back_ui:$tag game_server_back_ui:latest
+docker tag $harbor_url/back/game_server_back:$tag game_server_back:latest
+docker rmi $harbor_url/back/game_server_back_ui:$tag
+docker rmi $harbor_url/back/game_server_back:$tag
+docker save -o images/game_server_back_ui.image game_server_back_ui:latest
+docker save -o images/game_server_back.image game_server_back:latest
+docker rmi game_server_back_ui:latest
+docker rmi game_server_back:latest
+                '''
+            }
+        }
+        
+        stage('传输镜像') {
+            steps {
+                sh '''  
+#!/bin/bash
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+
+if [ "$name" = "UI" ]
+then
+{
+    scp -P $port -i /var/jenkins_home/data/ssh_id/$ssh_id evnconfig/baseUrl.json $ip:/root
+    scp -P $port -i /var/jenkins_home/data/ssh_id/$ssh_id installBack_ui.sh $ip:/root
+    scp -P $port -i /var/jenkins_home/data/ssh_id/$ssh_id images/game_server_back_ui.image $ip:/root
+}
+
+elif [ "$name" = "API" ]
+then
+{
+    scp -P $port -i /var/jenkins_home/data/ssh_id/$ssh_id evnconfig/appsettings.json $ip:/root
+    scp -P $port -i /var/jenkins_home/data/ssh_id/$ssh_id installBack.sh $ip:/root
+    scp -P $port -i /var/jenkins_home/data/ssh_id/$ssh_id images/game_server_back.image $ip:/root
+}
+
+else 
+{
+    scp -P $port -i /var/jenkins_home/data/ssh_id/$ssh_id evnconfig/baseUrl.json $ip:/root
+    scp -P $port -i /var/jenkins_home/data/ssh_id/$ssh_id installBack_ui.sh $ip:/root
+    scp -P $port -i /var/jenkins_home/data/ssh_id/$ssh_id images/game_server_back_ui.image $ip:/root
+    scp -P $port -i /var/jenkins_home/data/ssh_id/$ssh_id evnconfig/appsettings.json $ip:/root
+    scp -P $port -i /var/jenkins_home/data/ssh_id/$ssh_id installBack.sh $ip:/root
+    scp -P $port -i /var/jenkins_home/data/ssh_id/$ssh_id images/game_server_back.image $ip:/root
+}
+fi
+                '''
+            }
+        }
+        
+        stage('部署') {
+            steps {
+                sh '''
+#!/bin/bash
+
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+
+# 赋予脚本执行权限然后在目标主机执行脚本
+if [ "$name" = "UI" ]
+then
+{
+    ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'chmod a+x installBack_ui.sh' all -i hosts
+    ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a './installBack_ui.sh ' all -i hosts
+}
+
+elif [ "$name" = "API" ]
+then
+{
+    ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'chmod a+x installBack.sh' all -i hosts
+    ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a './installBack.sh ' all -i hosts
+}
+
+else 
+{
+    ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'chmod a+x installBack_ui.sh' all -i hosts
+    ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'chmod a+x installBack.sh' all -i hosts
+    ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a './installBack_ui.sh ' all -i hosts
+    ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a './installBack.sh ' all -i hosts
+}
+fi
+
+sleep 5
+containerBack=$(ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'docker ps -a' all -i hosts | grep "game_server_back:" | grep "Up")
+containerBackUi=$(ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'docker ps -a' all -i hosts | grep "game_server_back_ui:" | grep "Up")
+if [ -z "$containerBack" ] || [ -z "$containerBackUi" ]; then
+    cat ~/empty
+    echo "【错误】...部署失败..."
+    exit 1
+fi
+
+# 列出所有运行中容器
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'docker ps' all -i hosts
+                '''
+            }
+        }
+    }
+}

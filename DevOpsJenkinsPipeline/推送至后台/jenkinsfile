@@ -1,0 +1,130 @@
+pipeline {
+    agent any
+    // parameters {  
+    //     // choice(name: 'evn', choices: ['GOSU_越南_内网'], description: '') 
+    // }
+    environment{
+        config_path="http://192.168.0.69:8080/svn/Common/Config/DevOpsJenkinsPipeline/evn_config"
+        username="wangsiwei"
+        password="wangsiwei123" 
+        harbor_url="192.168.8.2"
+    }
+    options {
+       timestamps() 
+    } 
+    stages { 
+        stage("拉取配置文件")
+        {
+            environment{
+                server_full_path="$config_path/${evn}@HEAD"
+            }
+            steps{
+                sh '''
+#!/bin/bash
+rm -rf *
+# 拉取对应配置文件
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q  $server_full_path evnconfig
+cat ./evnconfig/info.md
+                '''
+            }
+        }
+        stage("连通性检测")
+        {
+             
+            steps{
+sh '''
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+cat > hosts << EOF
+[install]
+$ip
+EOF
+if [ -z $( ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m ping all -i hosts | grep "SUCCESS" ) ]; then
+    echo "【错误】... Ansuble 互信失败..."
+    exit 1
+fi
+'''
+            }
+        }
+        
+        stage('拉取最新镜像') {
+            
+            steps {
+                sh '''
+#!/bin/bash
+# 拉取最新版本镜像
+tag=$(cat evnconfig/info.md | grep "tag" | grep -Po '(?<=tag:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+rm -rf source && mkdir source
+docker pull $harbor_url/$branch/game_server:$tag
+docker pull $harbor_url/$branch/game_center_server:$tag
+
+#创建套壳文件夹
+rm -rf ./data/game_server/source/ && mkdir -p ./data/game_server/source/
+
+# 提取最新版本代码
+docker run --name game_server_hk  --restart always -d $harbor_url/$branch/game_server:$tag
+docker cp game_server_hk:/app ./data/game_server/source/app
+docker rm -f game_server_hk
+docker rmi -f $harbor_url/$branch/game_server:$tag
+tar -zcf source/app.tar ./data/game_server/source/app
+rm -rf ./data/game_server/source/app
+
+docker run --name game_center_server_hk  --restart always -d $harbor_url/$branch/game_center_server:$tag
+docker cp game_center_server_hk:/app/ ./data/game_server/source/center_app
+docker rm -f game_center_server_hk
+docker rmi -f $harbor_url/$branch/game_center_server:$tag
+tar -zcf source/center_app.tar ./data/game_server/source/center_app
+rm -rf ./data/game_server/source/center_app
+                '''
+            }
+        }
+        
+        stage('推送最新代码') {
+             
+            steps {
+                sh '''
+#!/bin/bash
+backstage_url=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+cat > source/update_info.md << EOF
+$(date +%F_%H-%M)
+EOF
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'mkdir -p /data/game/prod/back/data/game_server/source' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'rm -rf /data/game/prod/back/data/game_server/source/app*' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'rm -rf /data/game/prod/back/data/game_server/source/center*' all -i hosts
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id"  source/app.tar $backstage_url:/data/game/prod/back/data/game_server/source/
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" source/center_app.tar $backstage_url:/data/game/prod/back/data/game_server/source/
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" source/update_info.md $backstage_url:/data/game/prod/back/data/game_server/source/
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'tar zxf /data/game/prod/back/data/game_server/source/app.tar -C /data/game/prod/back/data/game_server/source/' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'mv /data/game/prod/back/data/game_server/source/data/game_server/source/app /data/game/prod/back/data/game_server/source/app' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'ls -lh /data/game/prod/back/data/game_server/source' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'cat /data/game/prod/back/data/game_server/source/app/version_code.md' all -i hosts
+                '''
+            }
+        }
+    }
+    post {
+        always {
+            sh '''
+#rm -rf *
+#docker rmi 192.168.8.2/$Project/game_server:$tag
+#docker rmi 192.168.8.2/$Project/game_center_server:$tag
+            '''
+        }
+        failure {
+            dingtalk (
+                robot: 'cbfa4af9-9516-431d-9be5-f99a63bd6a86',
+                type: 'MARKDOWN',
+                title: '你有新的消息，请注意查收',
+                text: [
+                    '# 运维测试·魔亚:更新推送至内网后台',
+                    '#### 来自 $JENKINS_URL 的消息',
+                    '---',
+                    '## ID:$BUILD_ID 构建状态:失败',
+                ]
+            )
+        }
+    }
+}

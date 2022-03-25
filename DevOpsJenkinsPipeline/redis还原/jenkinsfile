@@ -1,0 +1,87 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('连通性检测') {
+            steps {
+                sh '''
+#!/bin/bash
+
+cat > hosts << EOF
+[install]
+$IP
+EOF
+
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m ping all -i hosts
+
+if [ -z $( ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m ping all -i hosts | grep "SUCCESS" ) ]; then
+    echo "【错误】... Ansuble 互信失败..."
+    exit 1
+fi
+                '''
+            }
+        }
+        
+        stage('下载镜像数据') {
+            when {
+                expression {Link}
+            }
+            steps {
+                sh '''
+#!/bin/bash
+
+# 创建脚本
+cat > Pull.sh << EOF
+cd /data/$name/
+rm -rf hi*
+axel -n 64 -qo $(echo "$Link" | sed -nr \'1s#^.*/(.*)\\?.*$#\\1#gp\') "$Link"
+EOF
+
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" Pull.sh $IP:/root/
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'chmod a+x Pull.sh' all -i ./hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a '/root/Pull.sh' all -i ./hosts
+                '''
+            }
+        }
+        
+        stage('还原镜像数据') {
+            steps {
+                sh '''
+#!/bin/bash
+
+# 创建脚本
+cat > noPull.sh << EOF
+cd /data/$name/
+docker stop -t 666 $name
+cp -f $(echo "$Link" | sed -nr \'1s#^.*/(.*)\\?.*$#\\1#gp\') dump.rdb
+EOF
+
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" noPull.sh $IP:/root/
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'chmod a+x noPull.sh' all -i ./hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a '/root/noPull.sh' all -i ./hosts
+                '''
+            }
+        }
+        
+        stage('启动数据库') {
+            steps {
+                sh '''
+#!/bin/bash
+cat > start.sh << EOF
+docker start $name
+EOF
+
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" start.sh $IP:/root/
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'chmod a+x start.sh' all -i ./hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a '/root/start.sh' all -i ./hosts
+
+if [ -z $(ansible -m shell -a 'docker ps -a' all -i ./hosts | grep "$name" | grep "Up") ]
+then
+    echo "...redis启动失败..."
+    exit 1
+fi
+                '''
+            }
+        }
+    }
+}

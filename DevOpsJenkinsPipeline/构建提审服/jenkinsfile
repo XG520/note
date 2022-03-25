@@ -1,0 +1,192 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('获取配置信息') {
+            steps {
+                sh '''
+#!/bin/bash
+
+mkdir configs
+svn co --username wangsiwei --password wangsiwei123 --no-auth-cache -q http://192.168.0.69:8080/svn/common/Config/quickUpdate configs
+cat configs/$Server/info.md
+                '''
+            }
+        }
+        
+        stage('传输密钥') {
+            when {
+                  equals expected: 'true', 
+                  actual: copyKey
+                }
+                
+            steps {
+                sh '''
+#!/bin/bash
+
+expect << EOF
+spawn ssh-copy-id -f -p $(cat configs/$Server/info.md | grep "端口" | grep -Po '(?<=端口：).*') root@$(cat configs/$Server/info.md | grep "IP" | grep -Po '(?<=IP：).*')
+expect "(yes/no)?" {send "yes\r"}
+expect "password:" {send "$(cat configs/$Server/info.md | grep "密码" | grep -Po '(?<=密码：).*')\r"}
+expect "#" {send "exit 0\r"}
+EOF
+                '''
+            }
+        }
+        
+        stage('连通性检测') {
+            steps {
+                sh '''
+#!/bin/bash
+
+cat > hosts << EOF
+[install]
+$(cat configs/$Server/info.md | grep "IP" | grep -Po '(?<=IP：).*') ansible_ssh_port=$(cat configs/$Server/info.md | grep "端口" | grep -Po '(?<=端口：).*')
+EOF
+
+cat hosts
+
+ansible -m ping all -i hosts
+
+if [ -z $( ansible -m ping all -i hosts | grep "SUCCESS" ) ]; then
+    echo "【错误】... Ansuble 互信失败..."
+    exit 1
+fi
+                '''
+            }
+        }
+        
+        stage('拉取源码') {
+            steps {
+                sh '''
+#!/bin/bash
+
+mkdir publish code
+
+# 获取代码版本信息并拉取代码
+svn info --username wangsiwei --password wangsiwei123 --no-auth-cache $(cat configs/$Server/info.md | grep "代码地址" | grep -Po '(?<=代码地址：).*') > publish/version_code.md
+svn co --username wangsiwei --password wangsiwei123 --no-auth-cache -q $(cat configs/$Server/info.md | grep "代码地址" | grep -Po '(?<=代码地址：).*') code
+cat publish/version_code.md
+ls -lh code
+
+# 获取配置版本信息并拉取配置
+svn info --username wangsiwei --password wangsiwei123 --no-auth-cache $(cat configs/$Server/info.md | grep "表地址" | grep -Po '(?<=表地址：).*') > publish/version_config.md
+svn co --username wangsiwei --password wangsiwei123 --no-auth-cache -q $(cat configs/$Server/info.md | grep "表地址" | grep -Po '(?<=表地址：).*') config
+cat publish/version_config.md
+ls -lh config
+
+# 另外拉取表转换工具
+#rm -rf config/.svn config/ExcelConverter/*
+#svn co --username wangsiwei --password wangsiwei123 --no-auth-cache -q http://192.168.0.69:8080/svn/HGame/server/LiunxExcelConverter config/ExcelConverter
+#ls -lh config/ExcelConverter | grep ExcelConverterConsole.dll
+
+# 拉取开服活动
+mkdir activity
+svn co --username wangsiwei --password wangsiwei123 --no-auth-cache -q http://192.168.0.69:8080/svn/common/Config/moya activity
+ls -lh activity
+                '''
+            }
+        }
+        
+        stage('转换Excel') {
+            steps {
+                sh '''
+export DOTNET_ROOT=$HOME/dotnet
+export PATH=$PATH:$HOME/dotnet
+
+# 导表
+cp -rf config/input-海外-魔亚/* config/input
+cp -rf config/$(cat configs/$Server/info.md | grep "差异表" | grep -Po '(?<=差异表：).*')/* config/input
+cd config/ExcelConverter
+dotnet ExcelConverterConsole.dll ../input/ ../../
+cd ../../
+ls -lh
+cp -rf Server.Generate code/
+rm -rf publish/Bytes/
+mv package_debug/Bytes publish/
+                '''
+            }
+        }
+        
+        stage('编译代码') {
+            steps {
+                sh '''
+export DOTNET_ROOT=$HOME/dotnet
+export PATH=$PATH:$HOME/dotnet
+
+dotnet publish code/Server.Hotfix/Server.Hotfix.csproj -c Release -o publish
+dotnet publish code/Server.Logic/Server.Logic.csproj -c Release -o publish
+
+# 置入开服活动
+rm -f publish/Configs/openServerActivity.json
+cp -f activity/*  publish/Configs/
+
+# 删除不必要平台的 runtimes
+cd publish/runtimes/
+rm -rf linux-arm linux-arm64 linux-armel osx osx-x64 win win-arm win-x64 win-x86
+
+cd ../..
+                '''
+            }
+        }
+        
+        stage('传输代码') {
+            steps {
+                sh '''
+#!/bin/bash
+
+mv publish app
+tar -zcf app.tar.gz app
+ls -lh app.tar.gz
+
+scp -P $(cat configs/$Server/info.md | grep "端口" | grep -Po '(?<=端口：).*') app.tar.gz root@$(cat configs/$Server/info.md | grep "IP" | grep -Po '(?<=IP：).*'):/root/
+scp -P $(cat configs/$Server/info.md | grep "端口" | grep -Po '(?<=端口：).*') configs/$Server/app.sh root@$(cat configs/$Server/info.md | grep "IP" | grep -Po '(?<=IP：).*'):/root/
+                '''
+            }
+        }
+        
+        stage('载入基础镜像') {
+            when {
+                  equals expected: 'true', 
+                  actual: install
+                }
+                
+            steps {
+                sh '''
+#!/bin/bash
+
+mkdir images
+docker pull harbor.98.com/library/game_server:latest
+docker save -o images/game_server.image harbor.98.com/library/game_server:latest
+scp -r -P $(cat configs/$Server/info.md | grep "端口" | grep -Po '(?<=端口：).*') images root@$(cat configs/$Server/info.md | grep "IP" | grep -Po '(?<=IP：).*'):/root/
+ansible -m shell -a 'docker load -i images/game_server.image' all -i hosts
+                '''
+            }
+        }
+        
+        stage('执行更新') {
+            steps {
+                sh '''
+#!/bin/bash
+
+ansible -m shell -a 'chmod a+x /root/app.sh' all -i hosts
+ansible -m shell -a 'sh /root/app.sh' all -i hosts
+
+sleep 10
+
+if [ -z $(ansible -m shell -a 'docker ps -a ' all -i hosts | grep game_server:latest | grep "game_server_" | grep "Up") ]; then
+    echo "...部署失败..."
+    exit 1
+else
+    ansible -m command -a 'docker ps -a' all -i hosts
+fi
+                '''
+            }
+        }
+    }
+    post {
+        always {
+            sh 'rm -rf *'
+        }
+    }
+}

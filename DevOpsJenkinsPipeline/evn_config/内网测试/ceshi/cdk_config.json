@@ -1,0 +1,8 @@
+{
+	"httpInnerCode": "chengdu98_inner_secretkey",
+	"httpCode": "chengdu98_hgame",
+	"httpUrl": "/history/logic",
+	"httpPort" : 5000,
+	"mongoDB": "ceshi_cdk",
+	"mongoUrl": "mongodb://172.16.80.137:6666?waitQueueMultiple=50&compressors=zlib"
+}

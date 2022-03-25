@@ -1,0 +1,204 @@
+pipeline{
+    agent any
+    parameters {
+       
+        // choice(name: 'evn', choices: ['GOSU_越南_内网'], description: '')  
+        text(name: 'svn_code_version', defaultValue: 'HEAD', description: '代码的SVN路径及版本号')
+        text(name: 'svn_config_version', defaultValue: 'HEAD', description: '表与导表工具的SVN路径及版本号') 
+    }
+    environment{
+        server_path="http://192.168.0.69:8080/svn/HGame/server"
+        client_path="http://192.168.0.69:8080/svn/HGame/client"
+        config_path="http://192.168.0.69:8080/svn/common/Config/DevOpsJenkinsPipeline/evn_config"
+        username="wangsiwei"
+        password="wangsiwei123" 
+        harbor_url="192.168.8.2" 
+    }
+    stages{ 
+        stage("拉取配置文件")
+        {
+            environment{
+                server_full_path="$config_path/${evn}@HEAD"
+            }
+            steps{
+                sh '''             
+#!/bin/bash
+rm -rf *
+# 拉取对应配置文件
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q  $server_full_path evnconfig
+cat ./evnconfig/info.md
+                '''
+            }
+        }
+       
+        stage("拉取源码"){
+             environment{
+                server_full_path="$server_path/$branch@$svn_code_version"
+                client_full_path="$client_path/$branch/Config@$svn_code_version"
+            }
+            steps{
+               sh '''
+#!/bin/bash
+
+server_path=$(cat evnconfig/info.md | grep "server_path" | grep -Po '(?<=server_path:).*' | sed 's/\r//g')
+client_path=$(cat evnconfig/info.md | grep "client_path" | grep -Po '(?<=client_path:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+server_full_path="$server_path@$svn_code_version"
+client_full_path="$client_path/Config@$svn_code_version"
+
+# 创建编译输出目录
+rm -rf publish
+mkdir -p code publish config activity
+# 获取代码版本信息并保存
+svn info --username $username --password $password --no-auth-cache $server_full_path > publish/version_code.md
+cat publish/version_code.md
+
+# 拉取代码
+SVN_Revision=$(cat publish/version_code.md | grep Revision | grep -Po '(?<=Revision: ).*')
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q -r $SVN_Revision $server_full_path code
+
+# 获取配置版本信息并保存
+svn info --username $username --password $password --no-auth-cache $client_full_path > publish/version_config.md
+cat publish/version_config.md
+
+# 拉取配置
+SVN_Revision=$(cat publish/version_config.md | grep Revision | grep -Po '(?<=Revision: ).*')
+echo "【消息】拉取 $SVN_Revision 版本 Config"
+svn co --username $username --password $password --no-auth-cache -q -r $SVN_Revision $client_full_path config
+
+cp evnconfig/openServerActivity.json activity
+# 创建 Dockerfile
+time_zone1="ln -sf /usr/share/zoneinfo/$(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') /etc/localtime"
+time_zone2="echo $(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') >/etc/timezone" 
+
+cat > dockerfile_game_center << EOF
+FROM mcr.microsoft.com/dotnet/core/runtime:3.1
+WORKDIR /app
+
+RUN $time_zone1
+RUN $time_zone2
+COPY publish .
+ENTRYPOINT ["dotnet","Server.Center.dll"]
+EOF
+
+cat > dockerfile_game_server << EOF
+FROM mcr.microsoft.com/dotnet/core/runtime:3.1
+WORKDIR /app
+
+RUN $time_zone1
+RUN $time_zone2
+COPY publish .
+ENTRYPOINT ["dotnet","Server.Logic.dll"]
+EOF
+
+
+               '''  
+                
+            }
+             
+        }
+        stage("转换Excel")
+        {
+            environment{
+                server_full_path="$server_path/$branch@$svn_code_version"
+                client_full_path="$client_path/$branch/Config@$svn_code_version"
+            }
+            steps{
+sh '''
+server_path=$(cat evnconfig/info.md | grep "server_path" | grep -Po '(?<=server_path:).*' | sed 's/\r//g')
+client_path=$(cat evnconfig/info.md | grep "client_path" | grep -Po '(?<=client_path:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+server_full_path="$server_path@$svn_code_version"
+client_full_path="$client_path/Config@$svn_code_version"
+
+export DOTNET_ROOT=/usr/local/dotnet
+export PATH=$DOTNET_ROOT:$PATH
+# 导表
+table1=$(cat evnconfig/info.md | grep "渠道差异表" | grep -Po '(?<=渠道差异表:).*' | sed 's/\r//g')
+if [ -n "$table1" ]; then 
+cp -rf config/$table1/* config/input
+fi
+table2=$(cat evnconfig/info.md | grep "地区差异表" | grep -Po '(?<=地区差异表:).*' | sed 's/\r//g')
+if [ -n "$table2" ]; then 
+cp -rf config/$table2/* config/input
+fi
+table3=$(cat evnconfig/info.md | grep "提审差异表" | grep -Po '(?<=提审差异表:).*' | sed 's/\r//g')
+if [ -n "$table3" ]; then
+cp -rf config/$table3/* config/input
+fi
+
+cd config/ExcelConverter
+dotnet ExcelConverterConsole.dll ../input/ ../../
+cd ../../
+ls -lh
+cp -rf Server.Generate code/
+rm -rf publish/Bytes/
+mv package_debug/Bytes publish/
+'''
+
+            }
+
+        }
+        stage("编译代码"){
+            steps{
+sh '''
+export DOTNET_ROOT=/usr/local/dotnet
+export PATH=$DOTNET_ROOT:$PATH
+dotnet publish code/Server.Center/Server.Center.csproj -c Release -o publish
+dotnet publish code/Server.Logic/Server.Logic.csproj -c Release -o publish
+dotnet publish code/Server.Hotfix/Server.Hotfix.csproj -c Release -o publish
+
+
+
+# 置入开服活动
+rm -f publish/Configs/openServerActivity.json
+cp -f activity/openServerActivity.json  publish/Configs/openServerActivity.json
+  
+# 列出构建结果
+# ls -lh publish/
+# ls -lh publish/Bytes
+# ls -lh publish/Configs/
+
+# 删除不必要平台的 runtimes
+cd publish/runtimes/
+rm -rf linux-arm linux-arm64 linux-armel osx osx-x64 win win-arm win-x64 win-x86
+cd ../..
+'''
+
+            }
+
+        }
+        stage('构建镜像') {
+            steps {
+                sh '''
+
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+tag=$(cat evnconfig/info.md | grep "tag" | grep -Po '(?<=tag:).*' | sed 's/\r//g')
+docker build -t $harbor_url/$branch/game_center_server:$tag -f dockerfile_game_center .
+                '''
+            }
+        }
+        
+        stage('推送镜像') {
+            steps {
+                sh '''
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+tag=$(cat evnconfig/info.md | grep "tag" | grep -Po '(?<=tag:).*' | sed 's/\r//g')
+ 
+docker login $harbor_url -u admin -p admin_0000
+docker push $harbor_url/$branch/game_center_server:$tag
+docker rmi $harbor_url/$branch/game_center_server:$tag
+
+Today_Image=$(curl -k -u "admin:password" -XGET https://$harbor_url/v2/$branch/game_center_server/tags/list | grep $tag )
+if [ -z $Today_Image ]
+then
+    echo "【错误】...镜像仓库不存在中心服镜像..."
+    exit 1
+fi
+                '''
+            }
+        }
+    } 
+} 

@@ -1,0 +1,427 @@
+pipeline {
+    agent any
+    environment{
+        config_path="http://192.168.0.69:8080/svn/Common/Config/DevOpsJenkinsPipeline/evn_config"
+        username="wangsiwei"
+        password="wangsiwei123"
+        harbor_url="192.168.8.2"
+    }
+    options {
+       timestamps() 
+    }
+    stages { 
+        stage("拉取配置文件")
+        {
+            environment{
+                server_full_path="$config_path/${evn}@HEAD"
+            }
+            steps{
+                sh '''
+#!/bin/bash
+rm -rf *
+# 拉取对应配置文件
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q  $server_full_path evnconfig
+cat ./evnconfig/info.md
+                '''
+            }
+        }
+        stage("连通性检测")
+        {            
+            steps{
+                sh '''
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+user=$(cat evnconfig/info.md | grep "用户名" | grep -Po '(?<=用户名:).*' | sed 's/\r//g')
+
+cat > hosts << EOF
+[install]
+$ip ansible_ssh_port=$port ansible_ssh_user=$user
+EOF
+if [ -z "$( ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m ping all -i hosts | grep "SUCCESS" )" ]; then
+    echo "【错误】... Ansuble 互信失败..."
+    exit 1
+fi
+'''
+            }
+        }
+
+        stage("上传基础镜像")
+        {            
+            steps{
+                sh '''
+#!/bin/bash
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+
+mkdir 基础镜像
+#生成执行脚本
+cat > 基础镜像/install.sh << EOF
+#!/bin/bash
+docker load -i /root/基础镜像/dotnet_3.1.image
+EOF
+
+docker save -o 基础镜像/dotnet_3.1.image mcr.microsoft.com/dotnet/core/runtime:3.1
+scp -r -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $port 基础镜像 $ip:/root
+
+'''
+            }
+        }
+
+        stage('recharge') 
+        {
+            when {
+                  equals expected: 'true', 
+                  actual: recharge
+                }
+            steps {
+                sh '''
+#!/bin/bash
+server_path=$(cat evnconfig/info.md | grep "server_path" | grep -Po '(?<=server_path:).*' | sed 's/\r//g')
+client_path=$(cat evnconfig/info.md | grep "client_path" | grep -Po '(?<=client_path:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+server_full_path="$server_path@$svn_code_version"
+client_full_path="$client_path/Config@$svn_code_version"
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+
+mkdir -p recharge/code
+mkdir -p recharge/publish
+mkdir -p recharge/config
+mkdir -p recharge/activity
+# 获取代码版本信息并保存
+svn info --username $username --password $password --no-auth-cache $server_full_path > recharge/publish/version_code.md
+cat recharge/publish/version_code.md
+
+# 拉取代码
+SVN_Revision=$(cat recharge/publish/version_code.md | grep Revision | grep -Po '(?<=Revision: ).*')
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q -r $SVN_Revision $server_full_path recharge/code
+
+# 获取配置版本信息并保存
+svn info --username $username --password $password --no-auth-cache $client_full_path > recharge/publish/version_config.md
+cat recharge/publish/version_config.md
+
+# 拉取配置
+SVN_Revision=$(cat recharge/publish/version_config.md | grep Revision | grep -Po '(?<=Revision: ).*')
+echo "【消息】拉取 $SVN_Revision 版本 Config"
+svn co --username $username --password $password --no-auth-cache -q -r $SVN_Revision $client_full_path recharge/config
+
+# 创建 Dockerfile
+time_zone1="ln -sf /usr/share/zoneinfo/$(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') /etc/localtime"
+time_zone2="echo $(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') >/etc/timezone" 
+
+cat > recharge/Dockerfile << EOF
+FROM mcr.microsoft.com/dotnet/core/runtime:3.1
+WORKDIR /app
+RUN $time_zone1
+RUN $time_zone2
+COPY publish .
+ENTRYPOINT ["dotnet","Server.Recharge.dll"]
+EOF
+
+#转换Execl
+export DOTNET_ROOT=/usr/local/dotnet
+export PATH=$DOTNET_ROOT:$PATH
+# 导表
+table1=$(cat evnconfig/info.md | grep "渠道差异表" | grep -Po '(?<=渠道差异表:).*' | sed 's/\r//g')
+if [ -n "$table1" ]; then 
+cp -rf recharge/config/$table1/* recharge/config/input
+fi
+table2=$(cat evnconfig/info.md | grep "地区差异表" | grep -Po '(?<=地区差异表:).*' | sed 's/\r//g')
+if [ -n "$table2" ]; then 
+cp -rf recharge/config/$table2/* recharge/config/input
+fi
+table3=$(cat evnconfig/info.md | grep "提审差异表" | grep -Po '(?<=提审差异表:).*' | sed 's/\r//g')
+if [ -n "$table3" ]; then
+cp -rf recharge/config/$table3/* recharge/config/input
+fi
+
+cd recharge/config/ExcelConverter
+dotnet ExcelConverterConsole.dll ../input/ ../../
+cd ../../../
+ls -lh
+cp -rf recharge/Server.Generate recharge/code/
+rm -rf recharge/publish/Bytes/
+mv recharge/package_debug/Bytes recharge/publish/
+
+#编译代码
+dotnet publish recharge/code/Server.Hotfix/Server.Hotfix.csproj -c Release -o recharge/publish
+dotnet publish recharge/code/Server.Recharge/Server.Recharge.csproj -c Release -o recharge/publish
+# 删除不必要平台的 runtimes
+cd recharge/publish/runtimes/
+rm -rf linux-arm linux-arm64 linux-armel osx osx-x64 win win-arm win-x64 win-x86
+cd ../../../
+
+cat > recharge/recharge_dockerfile << EOF
+FROM server_recharge:1.0
+WORKDIR /app
+COPY recharge_config.json .
+RUN rm -rf ./Configs/server_config.json && mv recharge_config.json ./Configs/server_config.json
+ENTRYPOINT ["dotnet","Server.Recharge.dll"]
+EOF
+
+cp evnconfig/recharge_config.json recharge
+
+#生成执行脚本
+cat > recharge/installRecharge.sh << EOF
+#!/bin/bash
+docker rm -f server_recharge
+docker rmi server_recharge:latest
+docker build -t server_recharge:1.0 -f Dockerfile .
+docker build -t server_recharge:latest -f recharge_dockerfile .
+docker run  --name server_recharge -p 9898:9898  --restart always -v /etc/localtime:/etc/localtime:ro -d server_recharge:latest
+docker restart server_recharge
+docker rmi -f server_recharge:1.0
+EOF
+
+#传输
+scp -r -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $port recharge $ip:/root
+'''
+            }
+        }
+
+        stage('CDK') 
+        {
+            when {
+                  equals expected: 'true', 
+                  actual: CDK
+                }
+            steps {
+                sh '''
+#!/bin/bash
+server_path=$(cat evnconfig/info.md | grep "server_path" | grep -Po '(?<=server_path:).*' | sed 's/\r//g')
+server_full_path="$server_path@HEAD"
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+tag=$(cat evnconfig/info.md | grep "tag" | grep -Po '(?<=tag:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+
+#创建目录
+mkdir -p CDK/code 
+mkdir -p CDK/publish 
+mkdir -p CDK/config 
+mkdir -p CDK/activity
+# 获取代码版本信息并保存
+svn info --username $username --password $password --no-auth-cache $server_full_path > CDK/publish/version_code.md
+cat CDK/publish/version_code.md
+
+# 拉取代码
+SVN_Revision=$(cat CDK/publish/version_code.md | grep Revision | grep -Po '(?<=Revision: ).*')
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q -r $SVN_Revision $server_full_path CDK/code
+
+  
+# 创建 Dockerfile
+time_zone1="ln -sf /usr/share/zoneinfo/$(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') /etc/localtime"
+time_zone2="echo $(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') >/etc/timezone" 
+
+cat > CDK/Dockerfile << EOF
+FROM mcr.microsoft.com/dotnet/core/runtime:3.1
+WORKDIR /app
+RUN $time_zone1
+RUN $time_zone2
+COPY publish .
+ENTRYPOINT ["dotnet","CDKeyServer.dll"]
+EOF
+
+export DOTNET_ROOT=/usr/local/dotnet
+export PATH=$DOTNET_ROOT:$PATH
+dotnet publish CDK/code/CDKeyServer/CDKeyServer.csproj -c Release -o CDK/publish
+
+# 删除不必要平台的 runtimes
+cd CDK/publish/runtimes/
+rm -rf linux-arm linux-arm64 linux-armel osx osx-x64 win win-arm win-x64 win-x86
+cd ../../../
+
+#编写 cdk_dockerfile
+cat > CDK/cdk_dockerfile << EOF
+FROM game_server_cdk:1.0
+WORKDIR /app
+COPY cdk_config.json .
+RUN rm -rf ./Configs/server_config.json && mv cdk_config.json ./Configs/AppSetting.json
+ENTRYPOINT ["dotnet","CDKeyServer.dll"]
+EOF
+
+cp evnconfig/cdk_config.json CDK
+
+#生成执行脚本
+cat > CDK/installCdk.sh << EOF
+#!/bin/bash
+docker rm -f game_server_cdk
+docker rmi game_server_cdk:latest
+docker build -t game_server_cdk:1.0 -f Dockerfile .
+docker build -t game_server_cdk:latest -f cdk_dockerfile .
+docker run  --name game_server_cdk -p 5000:5000  --restart always -v /etc/localtime:/etc/localtime:ro -d game_server_cdk:latest
+docker restart game_server_cdk
+docker rmi -f game_server_cdk:1.0
+EOF
+
+#传输
+scp -r -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $port CDK $ip:/root
+
+'''
+            }
+        }
+
+        stage('API') 
+        {
+            when {
+                  equals expected: 'true', 
+                  actual: API
+                }
+            steps {
+                sh '''
+#!/bin/bash
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+server_path="http://192.168.0.69:8080/svn/common/ManageSystem/Branches/SmartServer0220"
+server_full_path="$server_path@HEAD"
+
+# 创建编译输出目录
+yes | docker image prune
+mkdir -p API/code 
+mkdir -p API/publish
+mkdir -p API/config
+mkdir -p API/activity
+# 获取代码版本信息并保存
+svn info --username $username --password $password --no-auth-cache $server_full_path > API/publish/version_code.md
+cat API/publish/version_code.md
+
+# 拉取代码
+SVN_Revision=$(cat API/publish/version_code.md | grep Revision | grep -Po '(?<=Revision: ).*')
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q -r $SVN_Revision $server_full_path API/code
+ 
+# 创建 Dockerfile
+time_zone1="ln -sf /usr/share/zoneinfo/$(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') /etc/localtime"
+time_zone2="echo $(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') >/etc/timezone"
+
+cat > API/Dockerfile << EOF
+FROM mcr.microsoft.com/dotnet/core/runtime:3.1
+WORKDIR /app
+EXPOSE 5000
+RUN $time_zone1
+RUN $time_zone2
+COPY publish .
+ENTRYPOINT ["dotnet","SmartServer.Web.Host.dll"]
+EOF
+
+date +%F > API/Date
+echo "【消息】当前日期为：$(cat API/Date)"
+
+#编译代码
+export DOTNET_ROOT=/usr/local/dotnet
+export PATH=$DOTNET_ROOT:$PATH
+dotnet publish API/code/SmartServer.Web.Host/SmartServer.Web.Host.csproj -c Release -o API/publish
+
+cp evnconfig/appsettings.json API
+
+#生成执行脚本
+cat > API/installBack.sh << EOF
+#!/bin/bash
+docker rm -f game_server_back
+docker rmi game_server_back:latest
+docker build -t game_server_back:latest -f Dockerfile .
+docker run  --name game_server_back -p 21021:21021  -v /data/game/prod/back/data/game_server/source:/app/data/game_server/source -v /data/game/prod/back/App_Data/Logs:/app/App_Data/Logs --restart always -d game_server_back:latest
+docker cp appsettings.json game_server_back:/app/appsettings.json 
+docker restart game_server_back
+EOF
+
+#传输
+scp -r -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $port API $ip:/root
+
+'''
+            }
+        }
+
+        stage('UI') 
+        {
+            when {
+                  equals expected: 'true', 
+                  actual: UI
+                }
+            steps {
+                sh '''
+#!/bin/bash
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+client_path="http://192.168.0.69:8080/svn/common/ManageSystem/Branches/SmartClient0220"
+client_full_path="$client_path@HEAD"
+ 
+# 创建编译输出目录
+yes | docker image prune
+mkdir -p UI/code 
+mkdir -p UI/publish
+mkdir -p UI/config
+mkdir -p UI/activity
+
+# 获取代码版本信息并保存
+svn info --username $username --password $password --no-auth-cache $client_full_path > UI/publish/version_code.md
+cat UI/publish/version_code.md
+
+# 拉取代码
+SVN_Revision=$(cat UI/publish/version_code.md | grep Revision | grep -Po '(?<=Revision: ).*')
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q -r $SVN_Revision $client_full_path UI/code
+
+# 创建 Dockerfile
+time_zone1="ln -sf /usr/share/zoneinfo/$(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') /etc/localtime"
+time_zone2="echo $(cat evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') >/etc/timezone" 
+
+cat > UI/Dockerfile << EOF
+FROM nginx
+RUN rm -rf /usr/share/nginx/html/*
+COPY ./code/dist/SmartClient /usr/share/nginx/html
+COPY ./code/docker/baseUrl.json /usr/share/nginx/html/assets/baseUrl.json
+COPY ./code/docker/_nginx/default.conf /etc/nginx/conf.d/
+COPY ./publish/version_code.md /
+RUN $time_zone1
+RUN $time_zone2
+CMD ["nginx", "-g", "daemon off;"]
+EOF
+
+# 获取日期
+date +%F > UI/Date
+echo "【消息】当前日期为：$(cat UI/Date)"
+
+# 同步node_modules
+cd UI/code
+npm config set registry https://registry.npm.taobao.org
+npm set sass_binary_site https://npm.taobao.org/mirrors/node-sass
+set NODE_OPTIONS --max_old_space_size=1024
+npm i --ignore-scripts
+npm i
+cd ../../
+
+# 编译代码
+cd UI/code
+ng build --prod --build-optimizer --aot  --output-hashing=all
+cd ../../
+
+cp evnconfig/baseUrl.json UI
+
+#生成执行脚本
+cat > UI/installBack_ui.sh << EOF
+#!/bin/bash
+docker rm -f game_server_back_ui
+docker rmi game_server_back_ui:latest
+docker build -t game_server_back_ui:latest -f Dockerfile .
+docker run  --name game_server_back_ui -p 4200:4200 --restart always -d game_server_back_ui:latest
+docker cp baseUrl.json game_server_back_ui:/usr/share/nginx/html/assets/tmp/baseUrl.json
+docker restart game_server_back_ui
+EOF
+
+#传输
+scp -r -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $port UI $ip:/root
+'''
+            }
+        }
+    }
+}

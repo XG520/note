@@ -1378,6 +1378,11 @@ let c=c+3  --->let c+=3
 test abc == abc #判断abc是否等于abc
 test abc != abc #判断abc是否不等于abc
 test $a == $b   #可以使用变量进行测试
+if [ str1 = str2 ]　　　　　  当两个串有相同内容、长度时为真 
+if [ str1 != str2 ]　　　　　 当串str1和str2不等时为真 
+if [ -n str1 ]　　　　　　 当串的长度大于0时为真(串非空) 
+if [ -z str1 ]　　　　　　　 当串的长度为0时为真(空串) 
+if [ str1 ]　　　　　　　　 当串str1为非空时为真
 [ -z $c ]       #判断变量是否为空
 ```
 

@@ -1,0 +1,13 @@
+端口:22
+用户名:root
+秘钥:intranet_rsa
+时区:Asia/Shanghai
+tag:qm_zg
+branch:trunk
+后台地址:192.168.1.242
+server_path:http://192.168.0.69:8080/svn/QGame/server/trunk
+client_path:http://192.168.0.69:8080/svn/QGame/client/trunk_dev
+ESIP：127.0.0.1
+渠道差异表:
+地区差异表:
+提审差异表:

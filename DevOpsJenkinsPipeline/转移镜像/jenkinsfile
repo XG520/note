@@ -1,0 +1,97 @@
+pipeline{
+    agent any
+    parameters {
+         
+        text(name: 'svn_code_version', defaultValue: 'HEAD', description: '代码的SVN路径及版本号')
+        text(name: 'svn_config_version', defaultValue: 'HEAD', description: '表与导表工具的SVN路径及版本号') 
+    }
+    environment{
+        config_path="http://192.168.0.69:8080/svn/common/Config/DevOpsJenkinsPipeline/evn_config"
+        username="wangsiwei"
+        password="wangsiwei123" 
+        harbor_url="192.168.8.2"
+    }
+    stages{
+        stage("拉取配置文件")
+        {
+            environment{
+                server_full_path="$config_path/${evn}@HEAD"
+            }
+            steps{
+                sh '''
+#!/bin/bash
+rm -fr *
+# 拉取对应配置文件
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q  $server_full_path evnconfig
+cat ./evnconfig/info.md
+                '''
+            }
+        }
+
+        stage("拉取最新镜像")
+        {
+            steps{
+                sh '''
+#!/bin/bash
+
+#获取版本号
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+tag=$(cat evnconfig/info.md | grep "tag" | grep -Po '(?<=tag:).*' | sed 's/\r//g')
+tag_server=$(curl -k -u "admin:admin_0000" -XGET https://192.168.8.2/v2/$branch/game_server/tags/list | grep -o $tag)
+tag_center_server=$(curl -k -u "admin:admin_0000" -XGET https://192.168.8.2/v2/$branch/game_center_server/tags/list | grep -o $tag)
+#拉取最新镜像
+docker pull $harbor_url/$branch/game_server:$tag_server
+docker pull $harbor_url/$branch/game_center_server:$tag_center_server
+                '''
+            }
+        }
+
+        stage("上传最新镜像")
+        {
+            steps{
+                sh '''
+#!/bin/bash
+
+#获取版本号
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+tag=$(cat evnconfig/info.md | grep "tag" | grep -Po '(?<=tag:).*' | sed 's/\r//g')
+tag_server=$(curl -k -u "admin:admin_0000" -XGET https://192.168.8.2/v2/$branch/game_server/tags/list | grep -o $tag)
+tag_center_server=$(curl -k -u "admin:admin_0000" -XGET https://192.168.8.2/v2/$branch/game_center_server/tags/list | grep -o $tag)
+
+# 获取日期
+date +%F > Date
+echo "【消息】当前日期为:$(cat Date)" 
+
+#修改镜像名称
+docker tag $harbor_url/$branch/game_server:$tag_server $harbor_url/$tag/game_server:$(cat Date)
+docker tag $harbor_url/$branch/game_center_server:$tag_server $harbor_url/$tag/game_center_server:$(cat Date)
+
+#上传镜像
+docker login $harbor_url -u admin -p admin_0000
+docker push $harbor_url/$tag/game_center_server:$(cat Date)
+docker rmi -f $harbor_url/$branch/game_server:$tag_server
+docker rmi -f $harbor_url/$tag/game_center_server:$(cat Date)
+docker push $harbor_url/$tag/game_server:$(cat Date)
+docker rmi -f $harbor_url/$branch/game_center_server:$tag_server
+docker rmi -f $harbor_url/$tag/game_center_server:$(cat Date)
+
+#检验
+Today_Image=$(curl -k -u "admin:admin_0000" -XGET https://$harbor_url/v2/$tag/game_center_server/tags/list | grep $(cat Date) )
+if [ -z $Today_Image ]
+then
+    echo "【错误】...镜像仓库不存在中心服镜像..."
+    exit 1
+fi
+
+Today_Image2=$(curl -k -u "admin:admin_0000" -XGET https://$harbor_url/v2/$tag/game_server/tags/list | grep $(cat Date) )
+if [ -z $Today_Image2 ]
+then
+    echo "【错误】...镜像仓库不存在游戏服镜像..."
+    exit 1
+fi
+                '''
+            }
+        }
+    }
+}

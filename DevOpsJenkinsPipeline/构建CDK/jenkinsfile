@@ -1,0 +1,126 @@
+pipeline{
+    agent any
+    environment{
+        server_path="http://192.168.0.69:8080/svn/HGame/server"
+        client_path="http://192.168.0.69:8080/svn/HGame/client"
+        config_path="http://192.168.0.69:8080/svn/Common/Config/DevOpsJenkinsPipeline/evn_config"
+        username="wangsiwei"
+        password="wangsiwei123" 
+        harbor_url="192.168.8.2"
+    }
+    stages{ 
+        stage("拉取配置文件")
+        {
+            environment{
+                server_full_path="$config_path/${evn}@HEAD"
+            }
+            steps{
+                sh '''
+#!/bin/bash
+rm -fr *
+# 拉取对应配置文件
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q  $server_full_path evnconfig
+cat ./evnconfig/info.md
+                '''
+            }
+        }
+       
+        stage("拉取源码"){
+           
+            steps{
+               sh '''
+#!/bin/bash
+server_path=$(cat evnconfig/info.md | grep "server_path" | grep -Po '(?<=server_path:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+server_full_path="$server_path@HEAD"
+
+# 创建编译输出目录
+rm -rf publish
+mkdir -p code publish config activity
+# 获取代码版本信息并保存
+svn info --username $username --password $password --no-auth-cache $server_full_path > publish/version_code.md
+cat publish/version_code.md
+
+# 拉取代码
+SVN_Revision=$(cat publish/version_code.md | grep Revision | grep -Po '(?<=Revision: ).*')
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q -r $SVN_Revision $server_full_path code
+
+  
+# 创建 Dockerfile
+time_zone1="ln -sf /usr/share/zoneinfo/$(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') /etc/localtime"
+time_zone2="echo $(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') >/etc/timezone" 
+
+cat > Dockerfile << EOF
+FROM mcr.microsoft.com/dotnet/core/runtime:3.1
+WORKDIR /app
+
+RUN $time_zone1
+RUN $time_zone2
+COPY publish .
+ENTRYPOINT ["dotnet","CDKeyServer.dll"]
+EOF
+
+
+               '''  
+                
+            }
+             
+        } 
+        stage("编译代码"){
+            steps{
+sh '''
+export DOTNET_ROOT=/usr/local/dotnet
+export PATH=$DOTNET_ROOT:$PATH
+dotnet publish code/CDKeyServer/CDKeyServer.csproj -c Release -o publish
+  
+# 列出构建结果
+# ls -lh publish/
+# ls -lh publish/Bytes
+# ls -lh publish/Configs/
+
+# 删除不必要平台的 runtimes
+cd publish/runtimes/
+rm -rf linux-arm linux-arm64 linux-armel osx osx-x64 win win-arm win-x64 win-x86
+cd ../..
+'''
+
+            }
+
+        }
+        stage('构建镜像') {
+            steps {
+                sh '''
+tag=$(cat evnconfig/info.md | grep "tag" | grep -Po '(?<=tag:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+docker build -t $harbor_url/$branch/game_server_cdk:$tag -f Dockerfile . 
+                '''
+            }
+        }
+        
+        stage('推送镜像') {
+            steps {
+                sh '''
+tag=$(cat evnconfig/info.md | grep "tag" | grep -Po '(?<=tag:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+docker login $harbor_url -u admin -p admin_0000
+docker push $harbor_url/$branch/game_server_cdk:$tag 
+docker rmi $harbor_url/$branch/game_server_cdk:$tag
+
+Today_Image=$(curl -k -u "admin:admin_0000" -XGET https://$harbor_url/v2/$branch/game_server_cdk/tags/list | grep $tag )
+if [ -z $Today_Image ]
+then
+    echo "【错误】...镜像仓库不存在CDK镜像..."
+    exit 1
+fi
+                '''
+            }
+        }
+    } 
+} 
+
+
+
+
+ 

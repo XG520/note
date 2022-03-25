@@ -1,0 +1,141 @@
+pipeline{
+    agent any
+    parameters { 
+        choice(name: 'evn', choices: ['GOSO_越南_内网'], description: '') 
+    }
+    environment{
+        config_path="http://192.168.0.69:8080/svn/common/Config/DevOpsJenkinsPipeline/evn_config"
+        username="wangsiwei"
+        password="wangsiwei123" 
+        harbor_url="192.168.8.2"
+    }
+    stages{
+        stage("拉取配置文件")
+        {
+            environment{
+                server_full_path="$config_path/${evn}@HEAD"
+            }
+            steps{
+                sh '''
+#!/bin/bash
+# 拉取对应配置文件
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q  $server_full_path evnconfig
+cat ./evnconfig/info.md
+                '''
+            }
+        }
+        stage('读取环境变量') {
+            steps {
+                sh '''
+#!/bin/bash
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+
+cat > Variable << EOF
+$ip
+$ssh_id
+$port
+EOF
+cat Variable
+                '''
+            }
+        }
+        stage('连通性检测') {
+            steps {
+                sh '''
+#!/bin/bash
+cat > hosts << EOF
+[install]
+$(cat Variable | sed -n 1p) ansible_ssh_port=$(cat Variable | sed -n 3p)
+EOF
+
+Ping=$( ansible --key-file "/var/jenkins_home/data/ssh_id/$(cat Variable | sed -n 2p)" -m ping all -i ./hosts | grep "SUCCESS" )
+if [ -z $Ping ]; then
+  echo "【错误】... Ansuble 互信失败..."
+  exit 1
+fi
+            '''
+            }
+        }
+        stage('构建基础镜像') {
+            steps {
+                sh '''
+#!/bin/bash
+time_zone1="ln -sf /usr/share/zoneinfo/$(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') /etc/localtime"
+time_zone2="echo $(cat  evnconfig/info.md | grep "时区" | grep -Po '(?<=时区:).*' | sed 's/\r//g') >/etc/timezone" 
+
+
+# 创建 Dockerfile
+cat > Dockerfile << EOF
+FROM mcr.microsoft.com/dotnet/core/runtime:3.1
+WORKDIR /app
+
+RUN $time_zone1
+RUN $time_zone2
+ENTRYPOINT ["dotnet","Server.Center.dll"]
+EOF
+
+# 构建中心服镜像
+docker build -t game_center_server:latest .
+
+# 创建 Dockerfile
+cat > Dockerfile << EOF
+FROM mcr.microsoft.com/dotnet/core/runtime:3.1
+WORKDIR /app
+
+RUN $time_zone1
+RUN $time_zone2
+ENTRYPOINT ["dotnet","Server.Logic.dll"]
+EOF
+
+# 构建游戏服镜像
+docker build -t game_server:latest .
+
+rm -rf source && mkdir source
+docker save -o source/game_server.tar game_server:latest
+docker save -o source/game_center_server.tar game_center_server:latest
+            '''
+            }
+        }
+        stage('推送') {
+            steps {
+                sh '''
+#!/bin/bash
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+
+ls -lh source
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m command -a 'rm -rf /data/game/prod/back/data/game_server/source/game_server.tar' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m command -a 'rm -rf /data/game/prod/back/data/game_server/source/game_center_server.tar' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m command -a 'mkdir -p /data/game/prod/back/data/game_server/source/' all -i hosts
+
+echo "【消息】>>>开始传输文件"
+
+scp -P $(cat Variable | sed -n 3p) -i /var/jenkins_home/data/ssh_id/$ssh_id source/game_server.tar $(cat Variable | sed -n 1p):/data/game/prod/back/data/game_server/source/
+scp -P $(cat Variable | sed -n 3p) -i /var/jenkins_home/data/ssh_id/$ssh_id source/game_center_server.tar $(cat Variable | sed -n 1p):/data/game/prod/back/data/game_server/source/
+
+# 检测目标主机的 /data/game/prod/back/data/game_server/source 目录下是否存在游戏镜像，不存在则失败
+game_server=$(ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m command -a 'ls /data/game/prod/back/data/game_server/source/' all -i ./hosts | grep "game_server.tar")
+game_center_server=$(ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m command -a 'ls /data/game/prod/back/data/game_server/source/' all -i ./hosts | grep "game_center_server.tar")
+if [ ${#game_server} -eq 0 ] || [ ${#game_center_server} -eq 0 ]; then
+   
+    echo "【错误】...不存在，推送失败..."
+fi
+
+# 查看推送结果
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m command -a 'ls -lh /data/game/prod/back/data/game_server/source' all -i hosts
+                '''
+            }
+        }
+
+
+    }
+    post {
+        always {
+            sh '''
+rm -rf *
+            '''
+        }
+    }
+}

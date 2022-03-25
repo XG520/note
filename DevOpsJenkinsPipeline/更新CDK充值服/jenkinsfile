@@ -1,0 +1,174 @@
+pipeline {
+    agent any
+    environment{
+        config_path="http://192.168.0.69:8080/svn/Common/Config/DevOpsJenkinsPipeline/evn_config"
+        username="wangsiwei"
+        password="wangsiwei123" 
+        harbor_url="192.168.8.2"
+    }
+    options {
+       timestamps() 
+    } 
+    stages { 
+        stage("拉取配置文件")
+        {
+            environment{
+                server_full_path="$config_path/${evn}@HEAD"
+            }
+            steps{
+                sh '''
+#!/bin/bash
+rm -fr *
+# 拉取对应配置文件
+echo "【消息】拉取 $SVN_Revision 版本 Code"
+svn co --username $username --password $password --no-auth-cache -q  $server_full_path evnconfig
+cat ./evnconfig/info.md
+                '''
+            }
+        }
+        stage("连通性检测")
+        {
+             
+            steps{
+sh '''
+port=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+ip=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+user=$(cat evnconfig/info.md | grep "用户名" | grep -Po '(?<=用户名:).*' | sed 's/\r//g')
+cat > hosts << EOF
+[install]
+$ip ansible_ssh_port=$port ansible_ssh_user=$user
+EOF
+if [ -z "$( ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m ping all -i hosts | grep "SUCCESS" )" ]; then
+    echo "【错误】... Ansuble 互信失败..."
+    exit 1
+fi
+'''
+            }
+        }
+        
+        stage('拉取最新镜像') {
+            
+            steps {
+                sh '''
+#!/bin/bash
+# 拉取最新版本镜像
+tag=$(cat evnconfig/info.md | grep "tag" | grep -Po '(?<=tag:).*' | sed 's/\r//g')
+branch=$(cat evnconfig/info.md | grep "branch" | grep -Po '(?<=branch:).*' | sed 's/\r//g')
+rm -rf source && mkdir source
+docker pull $harbor_url/$branch/server_recharge:$tag
+docker pull $harbor_url/$branch/game_server_cdk:$tag
+
+# 编写dockerfile
+cat > recharge_dockerfile << EOF
+FROM $harbor_url/$branch/server_recharge:$tag
+WORKDIR /app
+COPY ./evnconfig/recharge_config.json .
+RUN rm -rf ./Configs/server_config.json && mv recharge_config.json ./Configs/server_config.json
+ENTRYPOINT ["dotnet","Server.Recharge.dll"]
+EOF
+
+cat > cdk_dockerfile << EOF
+FROM $harbor_url/$branch/game_server_cdk:$tag
+WORKDIR /app
+COPY ./evnconfig/cdk_config.json .
+RUN rm -rf ./Configs/server_config.json && mv cdk_config.json ./Configs/AppSetting.json
+ENTRYPOINT ["dotnet","CDKeyServer.dll"]
+EOF
+
+cat > source/installRecharge.sh << EOF
+#!/bin/bash
+
+docker stop -t 100 server_recharge
+docker rm -f server_recharge
+docker run  --name server_recharge -p 9898:9898  --restart always -v /etc/localtime:/etc/localtime:ro -v /data/game/prod/back/data/game_server/source/recharge_app:/app -d server_recharge:latest
+docker restart server_recharge
+EOF
+
+cat > source/installCdk.sh << EOF
+#!/bin/bash
+
+docker stop -t 100 game_server_cdk
+docker rm -f game_server_cdk
+docker run  --name game_server_cdk -p 5000:5000  --restart always -v /etc/localtime:/etc/localtime:ro -v /data/game/prod/back/data/game_server/source/cdk_app:/app -d game_server_cdk:latest
+docker restart game_server_cdk
+EOF
+
+
+docker build -t server_recharge:latest -f recharge_dockerfile . 
+docker build -t game_server_cdk:latest -f cdk_dockerfile . 
+
+# 提取最新版本代码
+docker run --name server_recharge --restart always -d server_recharge:latest
+docker cp server_recharge:/app/ ./recharge_app
+docker rm -f server_recharge
+docker rmi -f server_recharge:latest
+tar -zcf ./recharge_app.tar ./recharge_app
+rm -rf ./recharge_app
+
+docker run --name game_server_cdk --restart always -d game_server_cdk:latest
+docker cp game_server_cdk:/app/ ./cdk_app
+docker rm -f game_server_cdk
+docker rmi -f game_server_cdk:latest
+tar -zcf ./cdk_app.tar ./cdk_app
+rm -rf ./cdk_app
+                '''
+            }
+        }
+        
+        stage('推送最新代码') {
+             
+            steps {
+                sh '''
+#!/bin/bash
+prot=$(cat evnconfig/info.md | grep "端口" | grep -Po '(?<=端口:).*' | sed 's/\r//g')
+backstage_url=$(cat evnconfig/info.md | grep "后台地址" | grep -Po '(?<=后台地址:).*' | sed 's/\r//g')
+ssh_id=$(cat evnconfig/info.md | grep "秘钥" | grep -Po '(?<=秘钥:).*' | sed 's/\r//g')
+cat > ./date_info.md << EOF
+$(date +%F_%H-%M)
+EOF
+
+
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'mkdir -p /data/game/prod/back/data/game_server/source' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'rm -rf /data/game/prod/back/data/game_server/source/cdk*' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'rm -rf /data/game/prod/back/data/game_server/source/recharge*' all -i hosts
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $prot ./recharge_app.tar $backstage_url:/data/game/prod/back/data/game_server/source/
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $prot ./cdk_app.tar $backstage_url:/data/game/prod/back/data/game_server/source/
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $prot ./date_info.md $backstage_url:/data/game/prod/back/data/game_server/source/
+scp -r -i "/var/jenkins_home/data/ssh_id/$ssh_id" -P $prot source/ $backstage_url:/root/
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'tar zxf /data/game/prod/back/data/game_server/source/recharge_app.tar -C /data/game/prod/back/data/game_server/source/' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'tar zxf /data/game/prod/back/data/game_server/source/cdk_app.tar -C /data/game/prod/back/data/game_server/source/' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'ls -lh /data/game/prod/back/data/game_server/source' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'cat /data/game/prod/back/data/game_server/source/recharge_app/version_code.md' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'cat /data/game/prod/back/data/game_server/source/cdk_app/version_code.md' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'chmod 777 /root/source/installCdk.sh ' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'chmod 777 /root/source/installRecharge.sh' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a '/root/source/installRecharge.sh' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a '/root/source/installCdk.sh' all -i hosts
+                '''
+            }
+        }
+    }
+    post {
+        always {
+            sh '''
+#rm -rf *
+#docker rmi harbor.98.com/$Project/game_server:$tag
+#docker rmi harbor.98.com/$Project/game_center_server:$tag
+            '''
+        }
+        failure {
+            dingtalk (
+                robot: 'cbfa4af9-9516-431d-9be5-f99a63bd6a86',
+                type: 'MARKDOWN',
+                title: '你有新的消息，请注意查收',
+                text: [
+                    '# 运维测试·魔亚:更新推送至内网后台',
+                    '#### 来自 $JENKINS_URL 的消息',
+                    '---',
+                    '## ID:$BUILD_ID 构建状态:失败',
+                ]
+            )
+        }
+    }
+}

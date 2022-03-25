@@ -1,0 +1,50 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('列出更改密钥的IP'){
+            steps{ 
+                sh '''
+#!/bin/bash
+# 创建 Ansuble 主机列表"
+cat > Hosts << EOF
+[install]
+$Hosts_IP
+EOF
+cat Hosts
+
+# 创建IP列表
+cat > Hosts_IP << EOF
+$Hosts_IP
+EOF
+
+# 列出要互信的主机IP
+echo "【消息】>>>批量修改密钥的IP"
+cat Hosts_IP
+            '''
+            }
+        }
+
+        stage('更换密钥'){
+            steps{ 
+sh '''
+#!/bin/bash  
+echo "【消息】>>>批量传输密钥"
+Number=$(cat Hosts_IP | awk 'END{print NR}')
+echo "【消息】...一共有$Number台主机将要传输密钥..."
+
+for Hosts in `seq 1 $Number`; do
+sleep 2
+scp -i /var/jenkins_home/data/ssh_id/$SSH_ID_old /var/jenkins_home/data/ssh_id/$SSH_ID.pub root@$(cat Hosts_IP | sed -n ''"${Hosts}"'p'):/root/.ssh/authorized_keys
+done
+
+Ping=$( ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m ping all -i Hosts | grep "SUCCESS" )
+if [ -z $Ping ]; then 
+echo "【错误】... Ansuble 互信失败..."
+exit 1
+fi
+            '''
+            }
+        }
+    }
+}

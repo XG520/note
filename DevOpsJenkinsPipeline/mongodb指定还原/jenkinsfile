@@ -1,0 +1,93 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('连通性检测') {
+            steps {
+                sh '''
+#!/bin/bash
+
+cat > hosts << EOF
+[install]
+$IP
+EOF
+
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m ping all -i hosts
+
+if [ -z $( ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m ping all -i hosts | grep "SUCCESS" ) ]; then
+    echo "【错误】... Ansuble 互信失败..."
+    exit 1
+fi
+                '''
+            }
+        }
+        
+        stage('备份指定数据库') {
+            steps {
+                sh '''
+#!/bin/bash
+cat > database_name << EOF
+$name
+EOF
+
+cat > backups.sh << "EOF"
+rm -fr /root/test
+Number=$(cat database_name | wc -l)
+if [ -n "$(cat database_name)" ]
+then
+{
+    for n in `seq 1 $Number`
+    do
+    {
+        echo "###"$(cat database_name | sed -n ''"${n}"'p')"###"
+        mongodump -h 192.168.1.232 --port 27017 -u root -p '#X*$9jWh' -d $(cat database_name | sed -n ''"${n}"'p') -o /root/test --authenticationDatabase admin
+    }
+    done
+}
+else
+{
+    mongodump -h 192.168.1.232 --port 27017 -u root -p '#X*$9jWh' -o /root/test --authenticationDatabase admin
+}
+fi
+EOF
+
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" database_name backups.sh $IP:/root/
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'chmod a+x backups.sh' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'sh /root/backups.sh' all -i hosts
+                '''
+            }
+        }
+        
+        stage('还原指定数据库') {
+            steps {
+                sh '''
+#!/bin/bash
+
+cat > reduction.sh << "EOF"
+Number=$(cat database_name | wc -l)
+if [ -n "$(cat database_name)" ]
+then
+{
+    for n in `seq 1 $Number`
+    do
+    {
+        echo "###"$(cat database_name | sed -n ''"${n}"'p')"###"
+        mongorestore -h 192.168.1.231 --port 27017 -d $(cat database_name | sed -n ''"${n}"'p') --dir /root/test/$(cat database_name | sed -n ''"${n}"'p') --drop
+    }
+    done
+}
+else
+{
+    mongorestore -h 192.168.1.231 --port 27017 --dir /root/test --drop
+}
+fi
+EOF
+
+scp -i "/var/jenkins_home/data/ssh_id/$ssh_id" reduction.sh $IP:/root/
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'chmod a+x reduction.sh' all -i hosts
+ansible --key-file "/var/jenkins_home/data/ssh_id/$ssh_id" -m shell -a 'sh /root/reduction.sh' all -i hosts
+                '''
+            }
+        }
+    }
+}

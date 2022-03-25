@@ -1,0 +1,27 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('列出更改密钥的IP') {
+            steps {
+                sh '''
+#! /bin/sh
+
+cat > Hosts <<EOF
+$ip
+EOF
+echo "【消息】>>>批量修改密码的IP"
+cat Hosts
+      '''
+      }
+    }
+
+    stage('更改密码') {
+            steps {
+                sh '''
+ansible --key-file "/var/jenkins_home/data/ssh_id/$SSH_ID" -m shell -a 'echo '$password' | passwd --stdin root' all -i Hosts
+      '''
+      }
+    }
+  }
+}
