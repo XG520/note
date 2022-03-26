@@ -49,7 +49,7 @@ EOF
 
 # 获取镜像版本号
 tagBack=$(curl -k -u "admin:admin_0000" -XGET https://$harbor_url/v2/back/game_server_back/tags/list |awk -F '[' '{print $2}'|awk -F ']' '{print $1}'|sed 's/"//g'  |sed 's/"//g' | sed 's/,/ /g' | awk '{print $NF}')
-tagUI=$(curl -k -u "admin:admin_0000" -XGET https://$harbor_url/v2/back/game_server_back_ui/tags/list |awk -F '[' '{print $2}'|awk -F ']' '{print $1}'|sed 's/"//g'  |sed 's/"//g' | sed 's/,/ /g' | awk '{print $NF}')
+tagUI=$(curl -k -u "admin:admin_0000" -XGET https://$harbor_url/v2/back/game_server_back_ui/tags/list |awk -F [']','['] '{print $2}'|awk -F ']' '{print $1}'|sed 's/"//g'  |sed 's/"//g' | sed 's/,/ /g' | awk '{print $NF}')
 
 # 生成部署脚本
 cat > installBack_ui.sh << EOF
@@ -78,7 +78,7 @@ EOF
 rm -rf images && mkdir images
 docker pull $harbor_url/back/game_server_back_ui:$tagUI
 docker pull $harbor_url/back/game_server_back:$tagBack
-docker tag $harbor_url/back/game_server_back_ui:$tagUI game_server_back_ui:latest
+docker $tag harbor_url/back/game_server_back_ui:$tagUI game_server_back_ui:latest
 docker tag $harbor_url/back/game_server_back:$tagBack game_server_back:latest
 docker rmi $harbor_url/back/game_server_back_ui:$tagUI
 docker rmi $harbor_url/back/game_server_back:$tagBack

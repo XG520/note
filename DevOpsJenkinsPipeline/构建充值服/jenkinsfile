@@ -159,7 +159,7 @@ docker login $harbor_url -u admin -p admin_0000
 docker push $harbor_url/$branch/server_recharge:$tag 
 docker rmi $harbor_url/$branch/server_recharge:$tag
 
-Today_Image=$(curl -k -u "admin:admin_0000" -XGET https://$harbor_url/v2/$branch/server_recharge/tags/list | grep $tag )
+Today_Image=$(curl -k -u "admin:admin_0000" -XGET https://192.168.8.2/v2/$branch/server_recharge/tags/list | grep $tag )
 if [ -z $Today_Image ]
 then
     echo "【错误】...镜像仓库不存在充值服镜像..."
